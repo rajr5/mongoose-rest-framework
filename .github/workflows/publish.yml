@@ -23,6 +23,10 @@ jobs:
           node-version: 14
           # Specifies the registry, this field is required!
           registry-url: https://registry.npmjs.org/
+      - name: Start MongoDB
+        uses: supercharge/mongodb-github-action@1.6.0
+        with:
+          mongodb-version: 4.4
       - name: Install project dependencies
         run: yarn install --frozen-lockfile
       # set up git since we will later push to the repo
