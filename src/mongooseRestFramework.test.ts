@@ -1,5 +1,5 @@
 import chai from "chai";
-import express from "express";
+import express, {Express} from "express";
 import mongoose, {model, Schema} from "mongoose";
 import passportLocalMongoose from "passport-local-mongoose";
 import supertest from "supertest";
@@ -46,7 +46,7 @@ const schema = new Schema<Food>({
 
 const FoodModel = model<Food>("Food", schema);
 
-function getBaseServer() {
+function getBaseServer(): Express {
   const app = express();
 
   app.all("/*", function(req, res, next) {
@@ -99,7 +99,7 @@ describe("goose", () => {
         }),
       ]);
       app = getBaseServer();
-      setupAuth(app);
+      setupAuth(app, {sessionSecret: "cats"});
       app.use(
         "/food",
         gooseRestRouter(FoodModel, {
@@ -291,7 +291,7 @@ describe("goose", () => {
         }),
       ]);
       app = getBaseServer();
-      setupAuth(app);
+      setupAuth(app, {sessionSecret: "cats"});
       app.use(
         "/food",
         gooseRestRouter(FoodModel, {

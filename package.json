@@ -3,6 +3,7 @@
   "version": "0.0.1",
   "description": "Styled after the Django REST Framework, a batteries-include framework for building REST APIs with Node/Express/Mongoose.",
   "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc",
     "lint": "eslint --fix \"src/**/*.ts*\"",

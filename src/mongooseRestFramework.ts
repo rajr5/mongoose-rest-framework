@@ -132,7 +132,7 @@ export function tokenPlugin(schema: Schema) {
 }
 
 // TODO allow customization
-export function setupAuth(app: express.Application) {
+export function setupAuth(app: express.Application, options: {sessionSecret: string}) {
   const UserModel = mongoose.model("User") as any;
   passport.use(UserModel.createStrategy());
 
@@ -145,7 +145,7 @@ export function setupAuth(app: express.Application) {
     res.json({data: req.user});
   });
 
-  app.use(session({secret: "cats"}) as any);
+  app.use(session({secret: options.sessionSecret}) as any);
   app.use(bodyParser.urlencoded({extended: false}) as any);
   app.use(passport.initialize() as any);
   app.use(passport.session());
@@ -223,7 +223,10 @@ export function AdminOwnerTransformer<T>(options: {
   };
 }
 
-export function gooseRestRouter<T>(model: Model<any>, options: GooseRESTOptions<T>) {
+export function gooseRestRouter<T>(
+  model: Model<any>,
+  options: GooseRESTOptions<T>
+): express.Router {
   const router = express.Router();
 
   function transform(data: Partial<T> | Partial<T>[], method: "create" | "update", user?: User) {
