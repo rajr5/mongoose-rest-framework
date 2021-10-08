@@ -4,6 +4,7 @@ import session from "express-session";
 import jwt from "jsonwebtoken";
 import mongoose, {Model, Schema} from "mongoose";
 import passport from "passport";
+import {Strategy as JwtStrategy, ExtractJwt} from "passport-jwt";
 
 // TODOS:
 // Firebase auth
@@ -131,14 +132,52 @@ export function tokenPlugin(schema: Schema) {
   });
 }
 
-// TODO allow customization
-export function setupAuth(app: express.Application, options: {sessionSecret: string}) {
-  const UserModel = mongoose.model("User") as any;
-  passport.use(UserModel.createStrategy());
+export function firebaseJWTPlugin(schema: Schema) {
+  schema.add({firebaseId: {type: String, index: true}});
+}
 
+// TODO allow customization
+export function setupAuth(
+  app: express.Application,
+  options: {
+    disableBasicAuth?: boolean;
+    sessionSecret: string;
+    jwtSecret?: string;
+    jwtIssuer?: string;
+  }
+) {
+  const UserModel = mongoose.model("User") as any;
+  if (!options.disableBasicAuth) {
+    passport.use(UserModel.createStrategy());
+  }
   // use static serialize and deserialize of model for passport session support
   passport.serializeUser(UserModel.serializeUser());
   passport.deserializeUser(UserModel.deserializeUser());
+
+  if (options.jwtSecret && options.jwtIssuer) {
+    const jwtOpts = {
+      jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
+      secretOrKey: options.jwtSecret,
+      issuer: options.jwtIssuer,
+      audience: "mongooseRestFramework",
+    };
+    passport.use(
+      new JwtStrategy(jwtOpts, async function(jwtPayload: any, done: any) {
+        let user;
+        try {
+          user = UserModel.findOne({firebaseId: jwtPayload.sub});
+        } catch (e) {
+          return done(e, false);
+        }
+        if (user) {
+          return done(null, user);
+        } else {
+          return done(null, false);
+          // or you could create a new account
+        }
+      })
+    );
+  }
 
   const router = express.Router();
   router.post("/login", passport.authenticate("local", {}), function(req: any, res: any) {
