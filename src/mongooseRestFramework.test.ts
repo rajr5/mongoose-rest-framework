@@ -99,7 +99,7 @@ describe("goose", () => {
         }),
       ]);
       app = getBaseServer();
-      setupAuth(app, {sessionSecret: "cats"});
+      setupAuth(app, UserModel as any, {sessionSecret: "cats"});
       app.use(
         "/food",
         gooseRestRouter(FoodModel, {
@@ -291,7 +291,7 @@ describe("goose", () => {
         }),
       ]);
       app = getBaseServer();
-      setupAuth(app, {sessionSecret: "cats"});
+      setupAuth(app, UserModel as any, {sessionSecret: "cats"});
       app.use(
         "/food",
         gooseRestRouter(FoodModel, {

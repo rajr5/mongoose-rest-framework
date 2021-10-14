@@ -30,6 +30,12 @@ interface User {
   isAnonymous?: boolean;
 }
 
+interface UserModel extends Model<User> {
+  createStrategy(): any;
+  serializeUser(): any;
+  deserializeUser(): any;
+}
+
 type PermissionMethod<T> = (method: RESTMethod, user?: User, obj?: T) => boolean;
 
 interface RESTPermissions<T> {
@@ -139,6 +145,7 @@ export function firebaseJWTPlugin(schema: Schema) {
 // TODO allow customization
 export function setupAuth(
   app: express.Application,
+  userModel: UserModel,
   options: {
     disableBasicAuth?: boolean;
     sessionSecret: string;
@@ -146,13 +153,22 @@ export function setupAuth(
     jwtIssuer?: string;
   }
 ) {
-  const UserModel = mongoose.model("User") as any;
+  if (!userModel.createStrategy) {
+    throw new Error("setupAuth userModel must have .createStrategy()");
+  }
+  if (!userModel.serializeUser) {
+    throw new Error("setupAuth userModel must have .serializeUser()");
+  }
+  if (!userModel.deserializeUser) {
+    throw new Error("setupAuth userModel must have .deserializeUser()");
+  }
+
   if (!options.disableBasicAuth) {
-    passport.use(UserModel.createStrategy());
+    passport.use(userModel.createStrategy());
   }
   // use static serialize and deserialize of model for passport session support
-  passport.serializeUser(UserModel.serializeUser());
-  passport.deserializeUser(UserModel.deserializeUser());
+  passport.serializeUser(userModel.serializeUser());
+  passport.deserializeUser(userModel.deserializeUser());
 
   if (options.jwtSecret && options.jwtIssuer) {
     const jwtOpts = {
@@ -165,7 +181,7 @@ export function setupAuth(
       new JwtStrategy(jwtOpts, async function(jwtPayload: any, done: any) {
         let user;
         try {
-          user = UserModel.findOne({firebaseId: jwtPayload.sub});
+          user = userModel.findOne({firebaseId: jwtPayload.sub});
         } catch (e) {
           return done(e, false);
         }
@@ -184,7 +200,7 @@ export function setupAuth(
     res.json({data: req.user});
   });
 
-  app.use(session({secret: options.sessionSecret}) as any);
+  app.use(session({secret: options.sessionSecret, resave: true, saveUninitialized: true}) as any);
   app.use(bodyParser.urlencoded({extended: false}) as any);
   app.use(passport.initialize() as any);
   app.use(passport.session());
@@ -320,10 +336,21 @@ export function gooseRestRouter<T>(
 
     let query = {};
 
+    // TODO we can make this much more complicated with ands and ors, but for now, simple queries
+    // will do.
     for (const queryParam of Object.keys(req.query)) {
       if ((options.queryFields ?? []).includes(queryParam)) {
         query[queryParam] = req.query[queryParam];
       }
+    }
+
+    // Special operators. NOTE: these request Mongo Atlas.
+    if (req.query["$search"]) {
+      mongoose.connection.db.collection(model.collection.collectionName);
+    }
+
+    if (req.query["$autocomplete"]) {
+      mongoose.connection.db.collection(model.collection.collectionName);
     }
 
     if (options.queryFilter) {
