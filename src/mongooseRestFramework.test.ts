@@ -10,9 +10,9 @@ import {
   setupAuth,
 } from "./mongooseRestFramework";
 
-mongoose.connect("mongodb://localhost:27017/testAvo");
-
 const assert = chai.assert;
+
+mongoose.connect("mongodb://localhost:27017/testAvo");
 
 interface User {
   admin: boolean;
@@ -63,7 +63,7 @@ function getBaseServer(): Express {
   return app;
 }
 
-describe("goose", () => {
+describe("mongoose rest framework", () => {
   let server: supertest.SuperTest<supertest.Test>;
   let app: express.Application;
 
@@ -493,6 +493,113 @@ describe("goose", () => {
         .patch(`/food/${carrots.id}`)
         .send({calories: 10})
         .expect(403);
+    });
+  });
+
+  let spinach: Food;
+  let apple: Food;
+  let carrots: Food;
+
+  describe("list options", function() {
+    let notAdmin: any;
+    let admin: any;
+
+    beforeEach(async function() {
+      await Promise.all([UserModel.deleteMany({}), FoodModel.deleteMany({})]);
+      [notAdmin, admin] = await Promise.all([
+        UserModel.create({username: "notAdmin"}),
+        UserModel.create({username: "admin", admin: true}),
+      ]);
+      await (notAdmin as any).setPassword("password");
+      await notAdmin.save();
+
+      await (admin as any).setPassword("securePassword");
+      await admin.save();
+
+      [spinach, apple, carrots] = await Promise.all([
+        FoodModel.create({
+          name: "Spinach",
+          calories: 1,
+          created: new Date(),
+          ownerId: notAdmin._id,
+          hidden: false,
+        }),
+        FoodModel.create({
+          name: "Apple",
+          calories: 100,
+          created: new Date().getTime() - 10,
+          ownerId: admin._id,
+          hidden: true,
+        }),
+        FoodModel.create({
+          name: "Carrots",
+          calories: 100,
+          created: new Date().getTime() - 20,
+          ownerId: admin._id,
+          hidden: false,
+        }),
+      ]);
+      app = getBaseServer();
+      setupAuth(app, UserModel as any, {sessionSecret: "cats"});
+      app.use(
+        "/food",
+        gooseRestRouter(FoodModel, {
+          permissions: {
+            list: [Permissions.IsAny],
+            create: [Permissions.IsAuthenticated],
+            read: [Permissions.IsAny],
+            update: [Permissions.IsOwner],
+            delete: [Permissions.IsAdmin],
+          },
+          defaultLimit: 2,
+          maxLimit: 2,
+          sort: {created: "descending"},
+          defaultQueryParams: {hidden: false},
+          queryFields: ["hidden", "calories"],
+          populatePaths: ["ownerId"],
+        })
+      );
+      server = supertest(app);
+    });
+
+    it("list limit", async function() {
+      const res = await server.get("/food?limit=1").expect(200);
+      assert.lengthOf(res.body.data, 1);
+      assert.equal(res.body.data[0].id, (spinach as any).id);
+      assert.equal(res.body.data[0].ownerId._id, notAdmin.id);
+    });
+
+    it("list limit over", async function() {
+      const res = await server.get("/food?limit=4").expect(200);
+      assert.lengthOf(res.body.data, 2);
+      assert.equal(res.body.data[0].id, (spinach as any).id);
+      assert.equal(res.body.data[1].id, (carrots as any).id);
+    });
+
+    it("list page", async function() {
+      // Should skip to carrots since apples are hidden
+      const res = await server.get("/food?limit=1&page=2").expect(200);
+      assert.lengthOf(res.body.data, 1);
+      assert.equal(res.body.data[0].id, (carrots as any).id);
+    });
+
+    it("list page over", async function() {
+      // Should skip to carrots since apples are hidden
+      const res = await server.get("/food?limit=1&page=4").expect(200);
+      assert.lengthOf(res.body.data, 0);
+    });
+
+    it("list query params", async function() {
+      // Should skip to carrots since apples are hidden
+      const res = await server.get("/food?hidden=true").expect(200);
+      assert.lengthOf(res.body.data, 1);
+      assert.equal(res.body.data[0].id, (apple as any).id);
+    });
+
+    it("list query params not in list", async function() {
+      // Should skip to carrots since apples are hidden
+      const res = await server.get("/food?name=Apple").expect(400);
+      assert.equal(res.body.message, "name is not allowed as a query param.");
     });
   });
 });

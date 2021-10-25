@@ -2,7 +2,7 @@ import bodyParser from "body-parser";
 import express from "express";
 import session from "express-session";
 import jwt from "jsonwebtoken";
-import mongoose, {Model, Schema} from "mongoose";
+import mongoose, {Document, Model, Schema} from "mongoose";
 import passport from "passport";
 import {Strategy as JwtStrategy, ExtractJwt} from "passport-jwt";
 
@@ -10,6 +10,8 @@ import {Strategy as JwtStrategy, ExtractJwt} from "passport-jwt";
 // Firebase auth
 // Support bulk actions
 // Support more complex query fields
+
+const SPECIAL_QUERY_PARAMS = ["limit", "page"];
 
 type RESTMethod = "list" | "create" | "read" | "update" | "delete";
 
@@ -51,6 +53,11 @@ interface GooseRESTOptions<T> {
   queryFields?: string[];
   queryFilter?: (user?: User) => Record<string, any> | undefined;
   transformer?: GooseTransformer<T>;
+  sort?: string | {[key: string]: "ascending" | "descending"};
+  defaultQueryParams?: {[key: string]: any};
+  populatePaths?: string[];
+  defaultLimit?: number; // defaults to 100
+  maxLimit?: number; // defaults to 500
 }
 
 export const Permissions = {
@@ -299,13 +306,17 @@ export function gooseRestRouter<T>(
     }
   }
 
-  function serialize(data: T | T[], user?: User) {
-    if (!options.transformer?.serialize) {
-      return data;
-    }
+  function serialize(data: Document<T, {}, {}> | Document<T, {}, {}>[], user?: User) {
+    const serializeFn = (data: Document<T, {}, {}>, user?: User) => {
+      const dataObject = data.toObject() as T;
+      (dataObject as any).id = data._id;
 
-    // TS doesn't realize this is defined otherwise...
-    const serializeFn = options.transformer?.serialize;
+      if (options.transformer?.serialize) {
+        return options.transformer?.serialize(dataObject, user);
+      } else {
+        return dataObject;
+      }
+    };
 
     if (!Array.isArray(data)) {
       return serializeFn(data, user);
@@ -336,11 +347,25 @@ export function gooseRestRouter<T>(
 
     let query = {};
 
+    for (const queryParam of Object.keys(options.defaultQueryParams ?? [])) {
+      query[queryParam] = (options.defaultQueryParams ?? {})[queryParam];
+    }
+
     // TODO we can make this much more complicated with ands and ors, but for now, simple queries
     // will do.
     for (const queryParam of Object.keys(req.query)) {
-      if ((options.queryFields ?? []).includes(queryParam)) {
-        query[queryParam] = req.query[queryParam];
+      if ((options.queryFields ?? []).concat(SPECIAL_QUERY_PARAMS).includes(queryParam)) {
+        // Not sure if this is necessary or if mongoose does the right thing.
+        if (req.query[queryParam] === "true") {
+          query[queryParam] = true;
+        } else if (req.query[queryParam] === "false") {
+          query[queryParam] = false;
+        } else {
+          query[queryParam] = req.query[queryParam];
+        }
+      } else {
+        console.debug("Unallowed query param", queryParam);
+        return res.status(400).json({message: `${queryParam} is not allowed as a query param.`});
       }
     }
 
@@ -357,10 +382,40 @@ export function gooseRestRouter<T>(
       query = {...query, ...options.queryFilter(req.user)};
     }
 
-    // TODO add query
-    const data = await model.find(query);
+    let limit = options.defaultLimit ?? 100;
+    if (req.query.limit && Number(req.query.limit) < (options.maxLimit ?? 500)) {
+      limit = Number(req.query.limit);
+    }
+
+    let builtQuery = model.find(query).limit(limit);
+
+    if (req.query.page) {
+      builtQuery = builtQuery.skip((Number(req.query.page) - 1) * limit);
+    }
+
+    if (options.sort) {
+      builtQuery = builtQuery.sort(options.sort);
+    }
+
+    // TODO: we should handle nested serializers here.
+    for (const populatePath of options.populatePaths ?? []) {
+      builtQuery = builtQuery.populate(populatePath);
+    }
+
+    let data: Document<T, {}, {}>[];
+    try {
+      data = await builtQuery.exec();
+    } catch (e) {
+      console.error("List error", e);
+      return res.status(500).send();
+    }
     // TODO add pagination
-    return res.json({data: serialize(data, req.user)});
+    try {
+      return res.json({data: serialize(data, req.user)});
+    } catch (e) {
+      console.error("Serialization error", e);
+      return res.status(500).send();
+    }
   });
 
   router.get("/:id", async (req, res) => {
