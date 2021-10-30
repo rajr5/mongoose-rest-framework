@@ -4,7 +4,7 @@ import session from "express-session";
 import jwt from "jsonwebtoken";
 import mongoose, {Document, Model, Schema} from "mongoose";
 import passport from "passport";
-import {Strategy as JwtStrategy, ExtractJwt} from "passport-jwt";
+import {Strategy as FirebaseStrategy, ExtractJwt} from "passport-firebase-jwt";
 
 // TODOS:
 // Firebase auth
@@ -58,6 +58,7 @@ interface GooseRESTOptions<T> {
   populatePaths?: string[];
   defaultLimit?: number; // defaults to 100
   maxLimit?: number; // defaults to 500
+  endpoints?: (router: any) => void;
 }
 
 export const Permissions = {
@@ -115,7 +116,7 @@ export const Permissions = {
 };
 
 // Defaults closed
-function checkPermissions<T>(
+export function checkPermissions<T>(
   method: RESTMethod,
   permissions: PermissionMethod<T>[],
   user?: User,
@@ -178,17 +179,20 @@ export function setupAuth(
   passport.deserializeUser(userModel.deserializeUser());
 
   if (options.jwtSecret && options.jwtIssuer) {
+    console.log("Setting up JWT Authentication");
+
     const jwtOpts = {
-      jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
-      secretOrKey: options.jwtSecret,
-      issuer: options.jwtIssuer,
-      audience: "mongooseRestFramework",
+      jwtFromRequest: ExtractJwt.fromAuthHeaderWithScheme("Bearer"),
     };
     passport.use(
-      new JwtStrategy(jwtOpts, async function(jwtPayload: any, done: any) {
+      new FirebaseStrategy(jwtOpts, async function(jwtPayload: any, done: any) {
         let user;
+        const payload = jwt.decode(jwtPayload);
+        if (!payload) {
+          return done(null, false);
+        }
         try {
-          user = userModel.findOne({firebaseId: jwtPayload.sub});
+          user = await userModel.findOne({firebaseId: payload.sub});
         } catch (e) {
           return done(e, false);
         }
@@ -205,6 +209,19 @@ export function setupAuth(
   const router = express.Router();
   router.post("/login", passport.authenticate("local", {}), function(req: any, res: any) {
     res.json({data: req.user});
+  });
+
+  router.get("/me", passport.authenticate("firebase-jwt", {session: false}), async (req, res) => {
+    if (!req.user?.id) {
+      return res.status(401).send();
+    }
+    const data = await userModel.findById(req.user.id);
+
+    if (!data) {
+      return res.status(404).send();
+    }
+    // TODO add filtering here.
+    return res.json({data});
   });
 
   app.use(session({secret: options.sessionSecret, resave: true, saveUninitialized: true}) as any);
@@ -483,6 +500,10 @@ export function gooseRestRouter<T>(
 
     return res.json({data: serialize(data, req.user)});
   });
+
+  if (options.endpoints) {
+    options.endpoints(router);
+  }
 
   return router;
 }
