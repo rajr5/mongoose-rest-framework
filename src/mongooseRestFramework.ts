@@ -36,6 +36,7 @@ interface UserModel extends Model<User> {
   createStrategy(): any;
   serializeUser(): any;
   deserializeUser(): any;
+  createAnonymousUser?: (id: string) => Promise<User>;
 }
 
 type PermissionMethod<T> = (method: RESTMethod, user?: User, obj?: T) => boolean;
@@ -199,8 +200,12 @@ export function setupAuth(
         if (user) {
           return done(null, user);
         } else {
-          return done(null, false);
-          // or you could create a new account
+          if (userModel.createAnonymousUser) {
+            user = await userModel.createAnonymousUser(payload.sub as string);
+            return done(null, user);
+          } else {
+            return done(null, false);
+          }
         }
       })
     );
@@ -220,8 +225,29 @@ export function setupAuth(
     if (!data) {
       return res.status(404).send();
     }
-    // TODO add filtering here.
+    (data as any).id = data._id;
+    console.log("DATA ID", data.id);
     return res.json({data});
+  });
+
+  router.patch("/me", passport.authenticate("firebase-jwt", {session: false}), async (req, res) => {
+    if (!req.user?.id) {
+      return res.status(401).send();
+    }
+    // TODO support limited updates for profile.
+    // try {
+    //   body = transform(req.body, "update", req.user);
+    // } catch (e) {
+    //   return res.status(403).send({message: (e as any).message});
+    // }
+    try {
+      const data = await userModel.findOneAndUpdate({_id: req.user.id}, req.body, {new: true});
+
+      (data as any).id = data._id;
+      return res.json({data});
+    } catch (e) {
+      return res.status(403).send({message: (e as any).message});
+    }
   });
 
   app.use(session({secret: options.sessionSecret, resave: true, saveUninitialized: true}) as any);
