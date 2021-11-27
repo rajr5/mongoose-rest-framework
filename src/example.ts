@@ -1,0 +1,88 @@
+import chai from "chai";
+import express, {Express} from "express";
+import mongoose, {model, Schema} from "mongoose";
+import passportLocalMongoose from "passport-local-mongoose";
+import supertest from "supertest";
+import {tokenPlugin} from ".";
+import {
+  AdminOwnerTransformer,
+  gooseRestRouter,
+  Permissions,
+  setupAuth,
+  baseUserPlugin,
+  createdDeletedPlugin,
+} from "./mongooseRestFramework";
+
+const assert = chai.assert;
+
+mongoose.connect("mongodb://localhost:27017/example");
+
+interface User {
+  admin: boolean;
+  username: string;
+}
+
+interface Food {
+  name: string;
+  calories: number;
+  created: Date;
+  ownerId: mongoose.Types.ObjectId | User;
+  hidden?: boolean;
+}
+
+const userSchema = new Schema<User>({
+  username: String,
+  admin: {type: Boolean, default: false},
+});
+
+userSchema.plugin(passportLocalMongoose, {usernameField: "email"});
+userSchema.plugin(tokenPlugin);
+userSchema.plugin(createdDeletedPlugin);
+userSchema.plugin(baseUserPlugin);
+const UserModel = model<User>("User", userSchema);
+
+const schema = new Schema<Food>({
+  name: String,
+  calories: Number,
+  created: Date,
+  ownerId: {type: "ObjectId", ref: "User"},
+  hidden: {type: Boolean, default: false},
+});
+
+const FoodModel = model<Food>("Food", schema);
+
+function getBaseServer() {
+  const app = express();
+
+  app.all("/*", function(req, res, next) {
+    res.header("Access-Control-Allow-Origin", "*");
+    res.header("Access-Control-Allow-Headers", "*");
+    //intercepts OPTIONS method
+    if (req.method === "OPTIONS") {
+      res.send(200);
+    } else {
+      next();
+    }
+  });
+  app.use(express.json());
+  setupAuth(app, UserModel as any, {
+    sessionSecret: "cats",
+    jwtSecret: "secret",
+    jwtIssuer: "example.com",
+  });
+  app.use(
+    "/food",
+    gooseRestRouter(FoodModel, {
+      permissions: {
+        list: [Permissions.IsAny],
+        create: [Permissions.IsAuthenticated],
+        read: [Permissions.IsAny],
+        update: [Permissions.IsOwner],
+        delete: [Permissions.IsAdmin],
+      },
+    })
+  );
+  app.listen(5004);
+  console.log("Running on 5004");
+}
+getBaseServer();

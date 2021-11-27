@@ -2,9 +2,12 @@ import bodyParser from "body-parser";
 import express from "express";
 import session from "express-session";
 import jwt from "jsonwebtoken";
-import mongoose, {Document, Model, Schema} from "mongoose";
+import mongoose, {Document, Model, ObjectId, Schema} from "mongoose";
 import passport from "passport";
-import {Strategy as FirebaseStrategy, ExtractJwt} from "passport-firebase-jwt";
+import {Strategy as JwtStrategy, ExtractJwt} from "passport-jwt";
+import {Strategy as AnonymousStrategy} from "passport-anonymous";
+import {Strategy as LocalStrategy} from "passport-local";
+import bcrypt from "bcrypt";
 
 // TODOS:
 // Firebase auth
@@ -27,16 +30,19 @@ interface GooseTransformer<T> {
 type UserType = "anon" | "auth" | "owner" | "admin";
 
 interface User {
+  _id: ObjectId | string;
   id: string;
   admin: boolean;
   isAnonymous?: boolean;
+  token?: string;
 }
 
-interface UserModel extends Model<User> {
+export interface UserModel extends Model<User> {
   createStrategy(): any;
   serializeUser(): any;
   deserializeUser(): any;
-  createAnonymousUser?: (id: string) => Promise<User>;
+  createAnonymousUser?: (id?: string) => Promise<User>;
+  isValidPassword: (password: string) => boolean;
 }
 
 type PermissionMethod<T> = (method: RESTMethod, user?: User, obj?: T) => boolean;
@@ -52,7 +58,8 @@ interface RESTPermissions<T> {
 interface GooseRESTOptions<T> {
   permissions: RESTPermissions<T>;
   queryFields?: string[];
-  queryFilter?: (user?: User) => Record<string, any> | undefined;
+  // return null to prevent the query from runnning
+  queryFilter?: (user?: User) => Record<string, any> | null;
   transformer?: GooseTransformer<T>;
   sort?: string | {[key: string]: "ascending" | "descending"};
   defaultQueryParams?: {[key: string]: any};
@@ -61,6 +68,14 @@ interface GooseRESTOptions<T> {
   maxLimit?: number; // defaults to 500
   endpoints?: (router: any) => void;
 }
+
+export const OwnerQueryFilter = (user?: User) => {
+  if (user) {
+    return {ownerId: user?.id};
+  }
+  // Return a null so we know to return no results.
+  return null;
+};
 
 export const Permissions = {
   IsAuthenticatedOrReadOnly: (method: RESTMethod, user?: User) => {
@@ -139,7 +154,13 @@ export function tokenPlugin(schema: Schema) {
   schema.pre("save", function(next) {
     // Add created when creating the object
     if (!this.token) {
-      this.token = jwt.sign(this._id, (process.env as any).TOKEN_SECRET, {expiresIn: "1800s"});
+      const options: any = {
+        expiresIn: "10h",
+      };
+      if ((process.env as any).TOKEN_ISSUER) {
+        options.issuer = (process.env as any).TOKEN_ISSUER;
+      }
+      this.token = jwt.sign({id: this._id.toString()}, (process.env as any).TOKEN_SECRET, options);
     }
     // On any save, update updated.
     this.updated = new Date();
@@ -147,8 +168,64 @@ export function tokenPlugin(schema: Schema) {
   });
 }
 
+export interface BaseUser {
+  admin: boolean;
+  email: string;
+}
+export function baseUserPlugin(schema: Schema) {
+  schema.add({admin: {type: Boolean, default: false}});
+  schema.add({email: {type: String, index: true}});
+}
+
+export interface IsDeleted {
+  deleted: boolean;
+}
+
+export function isDeletedPlugin(schema: Schema, defaultValue = false) {
+  schema.add({deleted: {type: Boolean, default: defaultValue, index: true}});
+  schema.pre("find", function() {
+    const query = this.getQuery();
+    if (query && query.deleted === undefined) {
+      this.where({deleted: {$ne: true}});
+    }
+  });
+}
+
+export interface CreatedDeleted {
+  updated: Date;
+  created: Date;
+}
+
+export function createdDeletedPlugin(schema: Schema) {
+  schema.add({updated: {type: Date, index: true}});
+  schema.add({created: {type: Date, index: true}});
+
+  schema.pre("save", function(next) {
+    if (this.disablecreatedDeletedPlugin === true) {
+      next();
+      return;
+    }
+    // If we aren't specifying created, use now.
+    if (!this.created) {
+      this.created = new Date();
+    }
+    // All writes update updated.
+    this.updated = new Date();
+    next();
+  });
+
+  schema.pre("update", function(next) {
+    this.update({}, {$set: {updated: new Date()}});
+    next();
+  });
+}
+
 export function firebaseJWTPlugin(schema: Schema) {
   schema.add({firebaseId: {type: String, index: true}});
+}
+
+export function authenticateMiddleware() {
+  return passport.authenticate(["jwt", "anonymous"], {session: false});
 }
 
 // TODO allow customization
@@ -158,10 +235,65 @@ export function setupAuth(
   options: {
     disableBasicAuth?: boolean;
     sessionSecret: string;
-    jwtSecret?: string;
     jwtIssuer?: string;
   }
 ) {
+  passport.use(new AnonymousStrategy());
+  passport.use(
+    "signup",
+    new LocalStrategy(
+      {
+        usernameField: "email",
+        passwordField: "password",
+      },
+      async (email, password, done) => {
+        try {
+          const user = await (userModel as any).register({email}, password);
+          await (user as any).setPassword(password);
+          await user.save();
+          if (!user.token) {
+            throw new Error("Token not created");
+          }
+          return done(null, user);
+        } catch (error) {
+          done(error);
+        }
+      }
+    )
+  );
+
+  passport.use(
+    "login",
+    new LocalStrategy(
+      {
+        usernameField: "email",
+        passwordField: "password",
+      },
+      async (email, password, done) => {
+        try {
+          const user = await userModel.findOne({email});
+
+          if (!user) {
+            console.debug("Could not find login user for", email);
+            return done(null, false, {message: "User not found"});
+          }
+
+          const validate = await (user as any).authenticate(password);
+
+          if (!validate) {
+            console.debug("Invalid password for", email);
+            return done(null, false, {message: "Wrong Password"});
+          }
+
+          return done(null, user, {message: "Logged in Successfully"});
+        } catch (error) {
+          console.error("Login error", error);
+          return done(error);
+        }
+      }
+    )
+  );
+
   if (!userModel.createStrategy) {
     throw new Error("setupAuth userModel must have .createStrategy()");
   }
@@ -179,21 +311,35 @@ export function setupAuth(
   passport.serializeUser(userModel.serializeUser());
   passport.deserializeUser(userModel.deserializeUser());
 
-  if (options.jwtSecret && options.jwtIssuer) {
-    console.log("Setting up JWT Authentication");
+  if ((process.env as any).TOKEN_SECRET && options.jwtIssuer) {
+    console.debug("Setting up JWT Authentication");
 
+    const customExtractor = function(req: any) {
+      let token = null;
+      if (req?.cookies?.jwt) {
+        token = req.cookies.jwt;
+      } else if (req?.headers?.authorization) {
+        token = req?.headers?.authorization.split(" ")[1];
+      }
+      return token;
+    };
     const jwtOpts = {
-      jwtFromRequest: ExtractJwt.fromAuthHeaderWithScheme("Bearer"),
+      // jwtFromRequest: ExtractJwt.fromAuthHeaderWithScheme("Bearer"),
+      jwtFromRequest: customExtractor,
+      secretOrKey: (process.env as any).TOKEN_SECRET,
+      issuer: (process.env as any).TOKEN_ISSUER,
     };
     passport.use(
-      new FirebaseStrategy(jwtOpts, async function(jwtPayload: any, done: any) {
+      new JwtStrategy(jwtOpts, async function(
+        payload: {id: string; iat: number; exp: number},
+        done: any
+      ) {
         let user;
-        const payload = jwt.decode(jwtPayload);
         if (!payload) {
           return done(null, false);
         }
         try {
-          user = await userModel.findOne({firebaseId: payload.sub});
+          user = await userModel.findById((payload as any).id);
         } catch (e) {
           return done(e, false);
         }
@@ -201,7 +347,7 @@ export function setupAuth(
           return done(null, user);
         } else {
           if (userModel.createAnonymousUser) {
-            user = await userModel.createAnonymousUser(payload.sub as string);
+            user = await userModel.createAnonymousUser();
             return done(null, user);
           } else {
             return done(null, false);
@@ -212,11 +358,21 @@ export function setupAuth(
   }
 
   const router = express.Router();
-  router.post("/login", passport.authenticate("local", {}), function(req: any, res: any) {
-    res.json({data: req.user});
+  router.post("/login", passport.authenticate("login", {session: false}), function(
+    req: any,
+    res: any
+  ) {
+    return res.json({data: {userId: req.user._id, token: req.user.token}});
   });
 
-  router.get("/me", passport.authenticate("firebase-jwt", {session: false}), async (req, res) => {
+  router.post("/signup", passport.authenticate("signup", {session: false}), async function(
+    req: any,
+    res: any
+  ) {
+    return res.json({data: {userId: req.user._id, token: req.user.token}});
+  });
+
+  router.get("/me", authenticateMiddleware(), async (req, res) => {
     if (!req.user?.id) {
       return res.status(401).send();
     }
@@ -225,9 +381,29 @@ export function setupAuth(
     if (!data) {
       return res.status(404).send();
     }
-    (data as any).id = data._id;
-    console.log("DATA ID", data.id);
-    return res.json({data});
+    const dataObject = data.toObject();
+    (dataObject as any).id = data._id;
+    return res.json({data: dataObject});
+  });
+
+  router.patch("/me", authenticateMiddleware(), async (req, res) => {
+    if (!req.user?.id) {
+      return res.status(401).send();
+    }
+    // TODO support limited updates for profile.
+    // try {
+    //   body = transform(req.body, "update", req.user);
+    // } catch (e) {
+    //   return res.status(403).send({message: (e as any).message});
+    // }
+    try {
+      const data = await userModel.findOneAndUpdate({_id: req.user.id}, req.body, {new: true});
+      const dataObject = data.toObject();
+      (dataObject as any).id = data._id;
+      return res.json({data: dataObject});
+    } catch (e) {
+      return res.status(403).send({message: (e as any).message});
+    }
   });
 
   router.patch("/me", passport.authenticate("firebase-jwt", {session: false}), async (req, res) => {
@@ -368,7 +544,12 @@ export function gooseRestRouter<T>(
     }
   }
 
-  router.post("/", async (req, res) => {
+  // Do before the other router options so endpoints take priority.
+  if (options.endpoints) {
+    options.endpoints(router);
+  }
+
+  router.post("/", authenticateMiddleware(), async (req, res) => {
     if (!checkPermissions("create", options.permissions.create, req.user)) {
       return res.status(405).send();
     }
@@ -383,7 +564,7 @@ export function gooseRestRouter<T>(
     return res.json({data: serialize(data, req.user)});
   });
 
-  router.get("/", async (req, res) => {
+  router.get("/", authenticateMiddleware(), async (req, res) => {
     if (!checkPermissions("list", options.permissions.list, req.user)) {
       return res.status(403).send();
     }
@@ -422,7 +603,14 @@ export function gooseRestRouter<T>(
     }
 
     if (options.queryFilter) {
-      query = {...query, ...options.queryFilter(req.user)};
+      const queryFilter = options.queryFilter(req.user);
+
+      // If the query filter returns null specifically, we know this is a query that shouldn't
+      // return any results.
+      if (queryFilter === null) {
+        return res.json({data: []});
+      }
+      query = {...query, ...queryFilter};
     }
 
     let limit = options.defaultLimit ?? 100;
@@ -461,7 +649,7 @@ export function gooseRestRouter<T>(
     }
   });
 
-  router.get("/:id", async (req, res) => {
+  router.get("/:id", authenticateMiddleware(), async (req, res) => {
     if (!checkPermissions("read", options.permissions.read, req.user)) {
       return res.status(405).send();
     }
@@ -479,13 +667,14 @@ export function gooseRestRouter<T>(
     return res.json({data: serialize(data, req.user)});
   });
 
-  router.put("/:id", async (req, res) => {
+  router.put("/:id", authenticateMiddleware(), async (req, res) => {
     // Patch is what we want 90% of the time
     return res.status(500);
   });
 
-  router.patch("/:id", async (req, res) => {
+  router.patch("/:id", authenticateMiddleware(), async (req, res) => {
     if (!checkPermissions("update", options.permissions.update, req.user)) {
+      console.debug(`Patch not allowed for user ${req.user?.id} on collection`);
       return res.status(405).send();
     }
 
@@ -496,6 +685,7 @@ export function gooseRestRouter<T>(
     }
 
     if (!checkPermissions("update", options.permissions.update, req.user, doc)) {
+      console.debug(`Patch not allowed for user ${req.user?.id} on doc ${doc._id}`);
       return res.status(403).send();
     }
 
@@ -503,13 +693,14 @@ export function gooseRestRouter<T>(
     try {
       body = transform(req.body, "update", req.user);
     } catch (e) {
+      console.debug(`Patch failed for user ${req.user?.id}: ${(e as any).message}`);
       return res.status(403).send({message: (e as any).message});
     }
     doc = await model.findOneAndUpdate({_id: req.params.id}, body, {new: true});
     return res.json({data: serialize(doc, req.user)});
   });
 
-  router.delete("/:id", async (req, res) => {
+  router.delete("/:id", authenticateMiddleware(), async (req, res) => {
     if (!checkPermissions("delete", options.permissions.delete, req.user)) {
       return res.status(405).send();
     }
@@ -526,10 +717,6 @@ export function gooseRestRouter<T>(
 
     return res.json({data: serialize(data, req.user)});
   });
-
-  if (options.endpoints) {
-    options.endpoints(router);
-  }
 
   return router;
 }

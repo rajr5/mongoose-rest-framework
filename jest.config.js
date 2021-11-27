@@ -2,6 +2,7 @@ const esModules = ["@sentry"].join("|");
 
 module.exports = {
   roots: ["<rootDir>/src"],
+  verbose: true,
   maxWorkers: 8,
   moduleFileExtensions: ["ts", "tsx", "js", "jsx", "json", "node"],
   setupFiles: ["<rootDir>/jestSetupFile.js"],
@@ -12,7 +13,7 @@ module.exports = {
 
   transformIgnorePatterns: [`/node_modules/(?!${esModules})`],
   testPathIgnorePatterns: ["<rootDir>/web", "<rootDir>/dist"],
-  moduleNameMapper: {
-    "firebase-admin": "<rootDir>/__mocks__/firebaseMock.ts",
-  },
+  // moduleNameMapper: {
+  //   "firebase-admin": "<rootDir>/__mocks__/firebaseMock.ts",
+  // },
 };

@@ -1,22 +1,29 @@
 import chai from "chai";
 import express, {Express} from "express";
-import mongoose, {model, Schema} from "mongoose";
+import mongoose, {model, ObjectId, Schema} from "mongoose";
 import passportLocalMongoose from "passport-local-mongoose";
 import supertest from "supertest";
 import {
   AdminOwnerTransformer,
+  createdDeletedPlugin,
   gooseRestRouter,
   Permissions,
   setupAuth,
+  tokenPlugin,
 } from "./mongooseRestFramework";
 
 const assert = chai.assert;
-
-mongoose.connect("mongodb://localhost:27017/testAvo");
+const JWTOptions = {
+  sessionSecret: "cats",
+  jwtSecret: "secret",
+  jwtIssuer: "example.com",
+};
+mongoose.connect("mongodb://localhost:27017/mrf");
 
 interface User {
   admin: boolean;
   username: string;
+  email: string;
 }
 
 interface Food {
@@ -32,7 +39,9 @@ const userSchema = new Schema<User>({
   admin: {type: Boolean, default: false},
 });
 
-userSchema.plugin(passportLocalMongoose);
+userSchema.plugin(passportLocalMongoose, {usernameField: "email"});
+userSchema.plugin(tokenPlugin);
+userSchema.plugin(createdDeletedPlugin);
 
 const UserModel = model<User>("User", userSchema);
 
@@ -63,20 +72,31 @@ function getBaseServer(): Express {
   return app;
 }
 
+afterAll(() => {
+  mongoose.connection.close();
+});
+
 describe("mongoose rest framework", () => {
   let server: supertest.SuperTest<supertest.Test>;
   let app: express.Application;
+  const OLD_ENV = process.env;
 
-  afterAll(() => {
-    mongoose.connection.close();
+  beforeEach(function() {
+    // jest.resetModules(); // Most important - it clears the cache
+    process.env = {...OLD_ENV}; // Make a copy
+    process.env.TOKEN_SECRET = "secret";
+  });
+
+  afterEach(function() {
+    process.env = OLD_ENV;
   });
 
   describe("permissions", function() {
     beforeEach(async function() {
       await Promise.all([UserModel.deleteMany({}), FoodModel.deleteMany({})]);
       const [notAdmin, admin] = await Promise.all([
-        UserModel.create({username: "notAdmin"}),
-        UserModel.create({username: "admin", admin: true}),
+        UserModel.create({email: "notAdmin@example.com"}),
+        UserModel.create({email: "admin@example.com", admin: true}),
       ]);
       await (notAdmin as any).setPassword("password");
       await notAdmin.save();
@@ -99,7 +119,7 @@ describe("mongoose rest framework", () => {
         }),
       ]);
       app = getBaseServer();
-      setupAuth(app, UserModel as any, {sessionSecret: "cats"});
+      setupAuth(app, UserModel as any, JWTOptions);
       app.use(
         "/food",
         gooseRestRouter(FoodModel, {
@@ -117,14 +137,14 @@ describe("mongoose rest framework", () => {
 
     describe("anonymous food", function() {
       it("list", async function() {
-        const res = await server.get("/food");
+        const res = await server.get("/food").expect(200);
         assert.lengthOf(res.body.data, 2);
       });
 
       it("get", async function() {
-        const res = await server.get("/food");
+        const res = await server.get("/food").expect(200);
         assert.lengthOf(res.body.data, 2);
-        const res2 = await server.get(`/food/${res.body.data[0]._id}`);
+        const res2 = await server.get(`/food/${res.body.data[0]._id}`).expect(200);
         assert.equal(res.body.data[0]._id, res2.body.data._id);
       });
 
@@ -153,40 +173,50 @@ describe("mongoose rest framework", () => {
 
     describe("non admin food", function() {
       let agent: supertest.SuperAgentTest;
+      let token: string;
       beforeEach(async function() {
         agent = supertest.agent(app);
-        await agent
+        const res = await agent
           .post("/auth/login")
-          .send({username: "notAdmin", password: "password"})
+          .send({email: "notAdmin@example.com", password: "password"})
           .expect(200);
+        token = res.body.data.token;
       });
 
       it("list", async function() {
-        const res = await agent.get("/food");
+        const res = await agent.get("/food").set("authorization", `Bearer ${token}`);
         assert.lengthOf(res.body.data, 2);
       });
 
       it("get", async function() {
-        const res = await agent.get("/food");
+        const res = await agent.get("/food").set("authorization", `Bearer ${token}`);
         assert.lengthOf(res.body.data, 2);
-        const res2 = await agent.get(`/food/${res.body.data[0]._id}`);
+        const res2 = await agent
+          .get(`/food/${res.body.data[0]._id}`)
+          .set("authorization", `Bearer ${token}`);
         assert.equal(res.body.data[0]._id, res2.body.data._id);
       });
 
       it("post", async function() {
-        const res = await agent.post("/food").send({
-          name: "Broccoli",
-          calories: 15,
-        });
+        const res = await agent
+          .post("/food")
+          .set("authorization", `Bearer ${token}`)
+          .send({
+            name: "Broccoli",
+            calories: 15,
+          });
         assert.equal(res.status, 200);
       });
 
       it("patch own item", async function() {
         const res = await agent.get("/food");
         const spinach = res.body.data.find((food: Food) => food.name === "Spinach");
-        const res2 = await agent.patch(`/food/${spinach._id}`).send({
-          name: "Broccoli",
-        });
+        const res2 = await agent
+          .patch(`/food/${spinach._id}`)
+          .set("authorization", `Bearer ${token}`)
+          .send({
+            name: "Broccoli",
+          });
         assert.equal(res2.status, 200);
         assert.equal(res2.body.data.name, "Broccoli");
       });
@@ -194,9 +224,12 @@ describe("mongoose rest framework", () => {
       it("patch other item", async function() {
         const res = await agent.get("/food");
         const spinach = res.body.data.find((food: Food) => food.name === "Apple");
-        const res2 = await agent.patch(`/food/${spinach._id}`).send({
-          name: "Broccoli",
-        });
+        const res2 = await agent
+          .patch(`/food/${spinach._id}`)
+          .set("authorization", `Bearer ${token}`)
+          .send({
+            name: "Broccoli",
+          });
         assert.equal(res2.status, 403);
       });
 
@@ -209,12 +242,14 @@ describe("mongoose rest framework", () => {
 
     describe("admin food", function() {
       let agent: supertest.SuperAgentTest;
+      let token: string;
       beforeEach(async function() {
         agent = supertest.agent(app);
-        await agent
+        const res = await agent
           .post("/auth/login")
-          .send({username: "admin", password: "securePassword"})
+          .send({email: "admin@example.com", password: "securePassword"})
           .expect(200);
+        token = res.body.data.token;
       });
 
       it("list", async function() {
@@ -230,24 +265,32 @@ describe("mongoose rest framework", () => {
       });
 
       it("post", async function() {
-        const res = await agent.post("/food").send({
-          name: "Broccoli",
-          calories: 15,
-        });
+        const res = await agent
+          .post("/food")
+          .set("authorization", `Bearer ${token}`)
+          .send({
+            name: "Broccoli",
+            calories: 15,
+          });
         assert.equal(res.status, 200);
       });
 
       it("patch", async function() {
         const res = await agent.get("/food");
-        const res2 = await agent.patch(`/food/${res.body.data[0]._id}`).send({
-          name: "Broccoli",
-        });
+        const res2 = await agent
+          .patch(`/food/${res.body.data[0]._id}`)
+          .set("authorization", `Bearer ${token}`)
+          .send({
+            name: "Broccoli",
+          });
         assert.equal(res2.status, 200);
       });
 
       it("delete", async function() {
         const res = await agent.get("/food");
-        const res2 = await agent.delete(`/food/${res.body.data[0]._id}`);
+        const res2 = await agent
+          .delete(`/food/${res.body.data[0]._id}`)
+          .set("authorization", `Bearer ${token}`);
         assert.equal(res2.status, 200);
       });
     });
@@ -260,8 +303,8 @@ describe("mongoose rest framework", () => {
     beforeEach(async function() {
       await Promise.all([UserModel.deleteMany({}), FoodModel.deleteMany({})]);
       [notAdmin, admin] = await Promise.all([
-        UserModel.create({username: "notAdmin"}),
-        UserModel.create({username: "admin", admin: true}),
+        UserModel.create({email: "notAdmin@example.com"}),
+        UserModel.create({email: "admin@example.com", admin: true}),
       ]);
       await (notAdmin as any).setPassword("password");
       await notAdmin.save();
@@ -291,7 +334,7 @@ describe("mongoose rest framework", () => {
         }),
       ]);
       app = getBaseServer();
-      setupAuth(app, UserModel as any, {sessionSecret: "cats"});
+      setupAuth(app, UserModel as any, JWTOptions);
       app.use(
         "/food",
         gooseRestRouter(FoodModel, {
@@ -302,7 +345,7 @@ describe("mongoose rest framework", () => {
             update: [Permissions.IsAny],
             delete: [Permissions.IsAny],
           },
-          queryFilter: (user?: {admin: boolean}) => {
+          queryFilter: (user?: {_id: ObjectId | string; admin: boolean}) => {
             if (!user?.admin) {
               return {hidden: {$ne: true}};
             }
@@ -325,31 +368,40 @@ describe("mongoose rest framework", () => {
 
     it("filters list for non-admin", async function() {
       const agent = supertest.agent(app);
-      await agent
+      const res = await agent
         .post("/auth/login")
-        .send({username: "notAdmin", password: "password"})
+        .send({email: "notAdmin@example.com", password: "password"})
         .expect(200);
-      const res = await agent.get("/food");
-      assert.lengthOf(res.body.data, 2);
+      const foodRes = await agent
+        .get("/food")
+        .set("authorization", `Bearer ${res.body.data.token}`)
+        .expect(200);
+      assert.lengthOf(foodRes.body.data, 2);
     });
 
     it("does not filter list for admin", async function() {
       const agent = supertest.agent(app);
-      await agent
+      const res = await agent
         .post("/auth/login")
-        .send({username: "admin", password: "securePassword"})
+        .send({email: "admin@example.com", password: "securePassword"})
         .expect(200);
-      const res = await agent.get("/food");
-      assert.lengthOf(res.body.data, 3);
+      const foodRes = await agent
+        .get("/food")
+        .set("authorization", `Bearer ${res.body.data.token}`)
+        .expect(200);
+      assert.lengthOf(foodRes.body.data, 3);
     });
 
     it("admin read transform", async function() {
       const agent = supertest.agent(app);
-      await agent
+      const res = await agent
         .post("/auth/login")
-        .send({username: "admin", password: "securePassword"})
+        .send({email: "admin@example.com", password: "securePassword"})
         .expect(200);
-      const foodRes = await agent.get("/food");
+      const foodRes = await agent
+        .get("/food")
+        .set("authorization", `Bearer ${res.body.data.token}`)
+        .expect(200);
       assert.lengthOf(foodRes.body.data, 3);
       const spinach = foodRes.body.data.find((food: Food) => food.name === "Spinach");
       assert.isDefined(spinach.created);
@@ -362,14 +414,18 @@ describe("mongoose rest framework", () => {
 
     it("admin write transform", async function() {
       const agent = supertest.agent(app);
-      await agent
+      const res = await agent
         .post("/auth/login")
-        .send({username: "admin", password: "securePassword"})
+        .send({email: "admin@example.com", password: "securePassword"})
         .expect(200);
-      const foodRes = await agent.get("/food");
+      const foodRes = await agent
+        .get("/food")
+        .set("authorization", `Bearer ${res.body.data.token}`)
+        .expect(200);
       const spinach = foodRes.body.data.find((food: Food) => food.name === "Spinach");
       const spinachRes = await agent
         .patch(`/food/${spinach.id}`)
+        .set("authorization", `Bearer ${res.body.data.token}`)
         .send({name: "Lettuce"})
         .expect(200);
       assert.equal(spinachRes.body.data.name, "Lettuce");
@@ -377,11 +433,14 @@ describe("mongoose rest framework", () => {
 
     it("owner read transform", async function() {
       const agent = supertest.agent(app);
-      await agent
+      const res = await agent
         .post("/auth/login")
-        .send({username: "notAdmin", password: "password"})
+        .send({email: "notAdmin@example.com", password: "password"})
         .expect(200);
-      const foodRes = await agent.get("/food");
+      const foodRes = await agent
+        .get("/food")
+        .set("authorization", `Bearer ${res.body.data.token}`)
+        .expect(200);
       assert.lengthOf(foodRes.body.data, 2);
       const spinach = foodRes.body.data.find((food: Food) => food.name === "Spinach");
       assert.isDefined(spinach.id);
@@ -394,11 +453,14 @@ describe("mongoose rest framework", () => {
 
     it("owner write transform", async function() {
       const agent = supertest.agent(app);
-      await agent
+      const res = await agent
         .post("/auth/login")
-        .send({username: "notAdmin", password: "password"})
+        .send({email: "notAdmin@example.com", password: "password"})
         .expect(200);
-      const foodRes = await agent.get("/food");
+      const foodRes = await agent
+        .get("/food")
+        .set("authorization", `Bearer ${res.body.data.token}`)
+        .expect(200);
       const spinach = foodRes.body.data.find((food: Food) => food.name === "Spinach");
       await agent
         .patch(`/food/${spinach.id}`)
@@ -408,14 +470,18 @@ describe("mongoose rest framework", () => {
 
     it("owner write transform fails", async function() {
       const agent = supertest.agent(app);
-      await agent
+      const res = await agent
         .post("/auth/login")
-        .send({username: "notAdmin", password: "password"})
+        .send({email: "notAdmin@example.com", password: "password"})
         .expect(200);
-      const foodRes = await agent.get("/food");
+      const foodRes = await agent
+        .get("/food")
+        .set("authorization", `Bearer ${res.body.data.token}`)
+        .expect(200);
       const spinach = foodRes.body.data.find((food: Food) => food.name === "Spinach");
       const spinachRes = await agent
         .patch(`/food/${spinach.id}`)
+        .set("authorization", `Bearer ${res.body.data.token}`)
         .send({ownerId: notAdmin.id})
         .expect(403);
       assert.equal(spinachRes.body.message, "User of type owner cannot write fields: ownerId");
@@ -423,11 +489,14 @@ describe("mongoose rest framework", () => {
 
     it("auth read transform", async function() {
       const agent = supertest.agent(app);
-      await agent
+      const res = await agent
         .post("/auth/login")
-        .send({username: "notAdmin", password: "password"})
+        .send({email: "notAdmin@example.com", password: "password"})
         .expect(200);
-      const foodRes = await agent.get("/food");
+      const foodRes = await agent
+        .get("/food")
+        .set("authorization", `Bearer ${res.body.data.token}`)
+        .expect(200);
       assert.lengthOf(foodRes.body.data, 2);
       const spinach = foodRes.body.data.find((food: Food) => food.name === "Spinach");
       assert.isDefined(spinach.id);
@@ -450,14 +519,16 @@ describe("mongoose rest framework", () => {
 
     it("auth write transform", async function() {
       const agent = supertest.agent(app);
-      await agent
+      const res = await agent
         .post("/auth/login")
-        .send({username: "notAdmin", password: "password"})
+        .send({email: "notAdmin@example.com", password: "password"})
         .expect(200);
+      console.log("RES", res.body);
       const foodRes = await agent.get("/food");
       const carrots = foodRes.body.data.find((food: Food) => food.name === "Carrots");
       const carrotRes = await agent
         .patch(`/food/${carrots.id}`)
+        .set("authorization", `Bearer ${res.body.data.token}`)
         .send({calories: 2000})
         .expect(200);
       assert.equal(carrotRes.body.data.calories, 2000);
@@ -465,16 +536,18 @@ describe("mongoose rest framework", () => {
 
     it("auth write transform fail", async function() {
       const agent = supertest.agent(app);
-      await agent
+      const res = await agent
         .post("/auth/login")
-        .send({username: "notAdmin", password: "password"})
+        .send({email: "notAdmin@example.com", password: "password"})
         .expect(200);
       const foodRes = await agent.get("/food");
       const carrots = foodRes.body.data.find((food: Food) => food.name === "Carrots");
-      await agent
+      const writeRes = await agent
         .patch(`/food/${carrots.id}`)
+        .set("authorization", `Bearer ${res.body.data.token}`)
         .send({created: "2020-01-01T00:00:00Z"})
         .expect(403);
+      assert.equal(writeRes.body.message, "User of type auth cannot write fields: created");
     });
 
     it("anon read transform", async function() {
@@ -507,8 +580,8 @@ describe("mongoose rest framework", () => {
     beforeEach(async function() {
       await Promise.all([UserModel.deleteMany({}), FoodModel.deleteMany({})]);
       [notAdmin, admin] = await Promise.all([
-        UserModel.create({username: "notAdmin"}),
-        UserModel.create({username: "admin", admin: true}),
+        UserModel.create({email: "notAdmin@example.com"}),
+        UserModel.create({email: "admin@example.com", admin: true}),
       ]);
       await (notAdmin as any).setPassword("password");
       await notAdmin.save();
@@ -540,7 +613,7 @@ describe("mongoose rest framework", () => {
         }),
       ]);
       app = getBaseServer();
-      setupAuth(app, UserModel as any, {sessionSecret: "cats"});
+      setupAuth(app, UserModel as any, JWTOptions);
       app.use(
         "/food",
         gooseRestRouter(FoodModel, {
@@ -601,5 +674,158 @@ describe("mongoose rest framework", () => {
       const res = await server.get("/food?name=Apple").expect(400);
       assert.equal(res.body.message, "name is not allowed as a query param.");
     });
+  });
+});
+
+describe("test token auth", function() {
+  let app;
+  let server: any;
+  const OLD_ENV = process.env;
+
+  beforeEach(function() {
+    // jest.resetModules(); // Most important - it clears the cache
+    process.env = {...OLD_ENV}; // Make a copy
+    process.env.TOKEN_SECRET = "secret";
+  });
+
+  afterEach(function() {
+    process.env = OLD_ENV;
+  });
+
+  beforeEach(async function() {
+    await Promise.all([UserModel.deleteMany({}), FoodModel.deleteMany({})]);
+
+    const [notAdmin, admin] = await Promise.all([
+      UserModel.create({email: "notAdmin@example.com"}),
+      UserModel.create({email: "admin@example.com", admin: true}),
+    ]);
+
+    await (notAdmin as any).setPassword("password");
+    await notAdmin.save();
+
+    await (admin as any).setPassword("securePassword");
+    await admin.save();
+
+    await Promise.all([
+      FoodModel.create({
+        name: "Spinach",
+        calories: 1,
+        created: new Date(),
+        ownerId: notAdmin._id,
+      }),
+      FoodModel.create({
+        name: "Apple",
+        calories: 100,
+        created: new Date().getTime() - 10,
+        ownerId: admin._id,
+        hidden: true,
+      }),
+      FoodModel.create({
+        name: "Carrots",
+        calories: 100,
+        created: new Date().getTime() - 10,
+        ownerId: admin._id,
+      }),
+    ]);
+    app = getBaseServer();
+    setupAuth(app, UserModel as any, JWTOptions);
+    app.use(
+      "/food",
+      gooseRestRouter(FoodModel, {
+        permissions: {
+          list: [Permissions.IsAny],
+          create: [Permissions.IsAuthenticated],
+          read: [Permissions.IsAny],
+          update: [Permissions.IsAuthenticated],
+          delete: [Permissions.IsAuthenticated],
+        },
+        queryFilter: (user?: {admin: boolean}) => {
+          if (!user?.admin) {
+            return {hidden: {$ne: true}};
+          }
+          return {};
+        },
+        transformer: AdminOwnerTransformer<Food>({
+          adminReadFields: ["name", "calories", "created", "ownerId"],
+          adminWriteFields: ["name", "calories", "created", "ownerId"],
+          ownerReadFields: ["name", "calories", "created", "ownerId"],
+          ownerWriteFields: ["name", "calories", "created"],
+          authReadFields: ["name", "calories", "created"],
+          authWriteFields: ["name", "calories"],
+          anonReadFields: ["name"],
+          anonWriteFields: [],
+        }),
+      })
+    );
+    server = supertest(app);
+  });
+
+  it("completes token signup e2e", async function() {
+    let res = await server
+      .post("/auth/signup")
+      .send({email: "new@example.com", password: "123"})
+      .expect(200);
+    let {userId, token} = res.body.data;
+    assert.isDefined(userId);
+    assert.isDefined(token);
+
+    res = await server
+      .post("/auth/login")
+      .send({email: "new@example.com", password: "123"})
+      .expect(200);
+    userId = res.body.data.userId;
+    token = res.body.data.token;
+    assert.isDefined(userId);
+    assert.isDefined(token);
+
+    const food = await FoodModel.create({
+      name: "Peas",
+      calories: 1,
+      created: new Date(),
+      ownerId: userId,
+    });
+
+    // Use token to see 2 foods + the one we just created
+    const getRes = await server
+      .get("/food")
+      .set("authorization", `Bearer ${token}`)
+      .expect(200);
+
+    assert.lengthOf(getRes.body.data, 3);
+    assert.isDefined(getRes.body.data.find((f: any) => f.name === "Peas"));
+
+    const updateRes = await server
+      .patch(`/food/${food._id}`)
+      .set("authorization", `Bearer ${token}`)
+      .send({name: "PeasAndCarrots"})
+      .expect(200);
+    assert.equal(updateRes.body.data.name, "PeasAndCarrots");
+  });
+
+  it("completes token login e2e", async function() {
+    const res = await server
+      .post("/auth/login")
+      .send({email: "admin@example.com", password: "securePassword"})
+      .expect(200);
+    const {userId, token} = res.body.data;
+    assert.isDefined(userId);
+    assert.isDefined(token);
+
+    // Use token to see admin foods
+    const getRes = await server
+      .get("/food")
+      .set("Authorization", `Bearer ${token}`)
+      .expect(200);
+
+    assert.lengthOf(getRes.body.data, 3);
+    const food = getRes.body.data.find((f: any) => f.name === "Apple");
+    assert.isDefined(food);
+
+    const updateRes = await server
+      .patch(`/food/${food.id}`)
+      .set("authorization", `Bearer ${token}`)
+      .send({name: "Apple Pie"})
+      .expect(200);
+    assert.equal(updateRes.body.data.name, "Apple Pie");
   });
 });
