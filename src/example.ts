@@ -67,7 +67,6 @@ function getBaseServer() {
   app.use(express.json());
   setupAuth(app, UserModel as any, {
     sessionSecret: "cats",
-    jwtSecret: "secret",
     jwtIssuer: "example.com",
   });
   app.use(

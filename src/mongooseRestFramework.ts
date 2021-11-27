@@ -10,9 +10,9 @@ import {Strategy as LocalStrategy} from "passport-local";
 import bcrypt from "bcrypt";
 
 // TODOS:
-// Firebase auth
 // Support bulk actions
 // Support more complex query fields
+// Rate limiting
 
 const SPECIAL_QUERY_PARAMS = ["limit", "page"];
 
