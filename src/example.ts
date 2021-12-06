@@ -1,16 +1,14 @@
 import chai from "chai";
-import express, {Express} from "express";
+import express from "express";
 import mongoose, {model, Schema} from "mongoose";
 import passportLocalMongoose from "passport-local-mongoose";
-import supertest from "supertest";
 import {tokenPlugin} from ".";
 import {
-  AdminOwnerTransformer,
+  baseUserPlugin,
+  createdDeletedPlugin,
   gooseRestRouter,
   Permissions,
   setupAuth,
-  baseUserPlugin,
-  createdDeletedPlugin,
 } from "./mongooseRestFramework";
 
 const assert = chai.assert;

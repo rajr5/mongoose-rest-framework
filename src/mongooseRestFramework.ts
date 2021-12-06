@@ -149,16 +149,19 @@ export function checkPermissions<T>(
   return anyTrue;
 }
 
-export function tokenPlugin(schema: Schema) {
+export function tokenPlugin(schema: Schema, options: {expiresIn?: number} = {}) {
   schema.add({token: {type: String, index: true}});
   schema.pre("save", function(next) {
     // Add created when creating the object
     if (!this.token) {
-      const options: any = {
+      const tokenOptions: any = {
         expiresIn: "10h",
       };
+      if ((process.env as any).TOKEN_EXPIRES_IN) {
+        tokenOptions.issuer = (process.env as any).TOKEN_EXPIRES_IN;
+      }
       if ((process.env as any).TOKEN_ISSUER) {
-        options.issuer = (process.env as any).TOKEN_ISSUER;
+        tokenOptions.issuer = (process.env as any).TOKEN_ISSUER;
       }
       this.token = jwt.sign({id: this._id.toString()}, (process.env as any).TOKEN_SECRET, options);
     }
