@@ -44,23 +44,23 @@ jobs:
         run: yarn test
         env:
           CI: true
-
-      - name: Slack Notification
-        uses: rtCamp/action-slack-notify@v2
-        env:
-          SLACK_CHANNEL: bots
-          SLACK_COLOR: "#4BB543"
-          # SLACK_MESSAGE: "Post Content :rocket:"
-          SLACK_TITLE: Mongoose REST Framework tests passed!
-          SLACK_USERNAME: ValDev
-          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
-      - name: The job has failed
-        if: ${{ failure() }}
-        uses: rtCamp/action-slack-notify@v2
-        env:
-          SLACK_CHANNEL: bots
-          SLACK_COLOR: "#FF0000"
-          # SLACK_MESSAGE: "Post Content :rocket:"
-          SLACK_TITLE: Mongoose REST Framework  tests failed :(
-          SLACK_USERNAME: ValDev
-          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+      # TODO: re-enable Slack webhooks when we set up slack.
+      # - name: Slack Notification
+      #   uses: rtCamp/action-slack-notify@v2
+      #   env:
+      #     SLACK_CHANNEL: bots
+      #     SLACK_COLOR: "#4BB543"
+      #     # SLACK_MESSAGE: "Post Content :rocket:"
+      #     SLACK_TITLE: Totum API tests passed!
+      #     SLACK_USERNAME: ValDev
+      #     SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+      # - name: The job has failed
+      #   if: ${{ failure() }}
+      #   uses: rtCamp/action-slack-notify@v2
+      #   env:
+      #     SLACK_CHANNEL: bots
+      #     SLACK_COLOR: "#FF0000"
+      #     # SLACK_MESSAGE: "Post Content :rocket:"
+      #     SLACK_TITLE: Mongoose REST Framework  tests failed :(
+      #     SLACK_USERNAME: ValDev
+      #     SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
