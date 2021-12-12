@@ -4,10 +4,22 @@ import session from "express-session";
 import jwt from "jsonwebtoken";
 import mongoose, {Document, Model, ObjectId, Schema} from "mongoose";
 import passport from "passport";
-import {Strategy as JwtStrategy, ExtractJwt} from "passport-jwt";
+import {Strategy as JwtStrategy} from "passport-jwt";
 import {Strategy as AnonymousStrategy} from "passport-anonymous";
 import {Strategy as LocalStrategy} from "passport-local";
-import bcrypt from "bcrypt";
+
+export interface Env {
+  NODE_ENV?: string;
+  PORT?: string;
+  SENTRY_DSN?: string;
+  SLACK_WEBHOOK?: string;
+  // JWT
+  TOKEN_SECRET?: string;
+  TOKEN_EXPIRES_IN?: string;
+  TOKEN_ISSUER?: string;
+  // AUTH
+  SESSION_SECRET?: string;
+}
 
 // TODOS:
 // Support bulk actions
@@ -157,13 +169,18 @@ export function tokenPlugin(schema: Schema, options: {expiresIn?: number} = {}) 
       const tokenOptions: any = {
         expiresIn: "10h",
       };
-      if ((process.env as any).TOKEN_EXPIRES_IN) {
-        tokenOptions.issuer = (process.env as any).TOKEN_EXPIRES_IN;
+      if ((process.env as Env).TOKEN_EXPIRES_IN) {
+        tokenOptions.expiresIn = (process.env as Env).TOKEN_EXPIRES_IN;
       }
-      if ((process.env as any).TOKEN_ISSUER) {
-        tokenOptions.issuer = (process.env as any).TOKEN_ISSUER;
+      if ((process.env as Env).TOKEN_ISSUER) {
+        tokenOptions.issuer = (process.env as Env).TOKEN_ISSUER;
       }
-      this.token = jwt.sign({id: this._id.toString()}, (process.env as any).TOKEN_SECRET, options);
+
+      const secretOrKey = (process.env as Env).TOKEN_SECRET;
+      if (!secretOrKey) {
+        throw new Error(`TOKEN_SECRET must be set in env.`);
+      }
+      this.token = jwt.sign({id: this._id.toString()}, secretOrKey, tokenOptions);
     }
     // On any save, update updated.
     this.updated = new Date();
@@ -227,20 +244,16 @@ export function firebaseJWTPlugin(schema: Schema) {
   schema.add({firebaseId: {type: String, index: true}});
 }
 
-export function authenticateMiddleware() {
-  return passport.authenticate(["jwt", "anonymous"], {session: false});
+export function authenticateMiddleware(anonymous = false) {
+  const strategies = ["jwt"];
+  if (anonymous) {
+    strategies.push("anonymous");
+  }
+  return passport.authenticate(strategies, {session: false});
 }
 
 // TODO allow customization
-export function setupAuth(
-  app: express.Application,
-  userModel: UserModel,
-  options: {
-    disableBasicAuth?: boolean;
-    sessionSecret: string;
-    jwtIssuer?: string;
-  }
-) {
+export function setupAuth(app: express.Application, userModel: UserModel) {
   passport.use(new AnonymousStrategy());
   passport.use(
     "signup",
@@ -259,7 +272,7 @@ export function setupAuth(
           }
           return done(null, user);
         } catch (error) {
-          done(error);
+          return done(error);
         }
       }
     )
@@ -307,17 +320,14 @@ export function setupAuth(
     throw new Error("setupAuth userModel must have .deserializeUser()");
   }
 
-  if (!options.disableBasicAuth) {
-    passport.use(userModel.createStrategy());
-  }
   // use static serialize and deserialize of model for passport session support
   passport.serializeUser(userModel.serializeUser());
   passport.deserializeUser(userModel.deserializeUser());
 
-  if ((process.env as any).TOKEN_SECRET && options.jwtIssuer) {
+  if ((process.env as Env).TOKEN_SECRET) {
     console.debug("Setting up JWT Authentication");
 
-    const customExtractor = function(req: any) {
+    const customExtractor = function(req: express.Request) {
       let token = null;
       if (req?.cookies?.jwt) {
         token = req.cookies.jwt;
@@ -326,13 +336,18 @@ export function setupAuth(
       }
       return token;
     };
+    const secretOrKey = (process.env as Env).TOKEN_SECRET;
+    if (!secretOrKey) {
+      throw new Error(`TOKEN_SECRET must be set in env.`);
+    }
     const jwtOpts = {
       // jwtFromRequest: ExtractJwt.fromAuthHeaderWithScheme("Bearer"),
       jwtFromRequest: customExtractor,
-      secretOrKey: (process.env as any).TOKEN_SECRET,
-      issuer: (process.env as any).TOKEN_ISSUER,
+      secretOrKey,
+      issuer: (process.env as Env).TOKEN_ISSUER,
     };
     passport.use(
+      "jwt",
       new JwtStrategy(jwtOpts, async function(
         payload: {id: string; iat: number; exp: number},
         done: any
@@ -344,15 +359,18 @@ export function setupAuth(
         try {
           user = await userModel.findById((payload as any).id);
         } catch (e) {
+          console.warn("[jwt] Error finding user from id", e);
           return done(e, false);
         }
         if (user) {
           return done(null, user);
         } else {
           if (userModel.createAnonymousUser) {
+            console.log("[jwt] Creating anonymous user");
             user = await userModel.createAnonymousUser();
             return done(null, user);
           } else {
+            console.log("[jwt] No user found from token");
             return done(null, false);
           }
         }
@@ -409,27 +427,13 @@ export function setupAuth(
     }
   });
 
-  router.patch("/me", passport.authenticate("firebase-jwt", {session: false}), async (req, res) => {
-    if (!req.user?.id) {
-      return res.status(401).send();
-    }
-    // TODO support limited updates for profile.
-    // try {
-    //   body = transform(req.body, "update", req.user);
-    // } catch (e) {
-    //   return res.status(403).send({message: (e as any).message});
-    // }
-    try {
-      const data = await userModel.findOneAndUpdate({_id: req.user.id}, req.body, {new: true});
-
-      (data as any).id = data._id;
-      return res.json({data});
-    } catch (e) {
-      return res.status(403).send({message: (e as any).message});
-    }
-  });
-
-  app.use(session({secret: options.sessionSecret, resave: true, saveUninitialized: true}) as any);
+  app.use(
+    session({
+      secret: (process.env as Env).SESSION_SECRET as string,
+      resave: true,
+      saveUninitialized: true,
+    }) as any
+  );
   app.use(bodyParser.urlencoded({extended: false}) as any);
   app.use(passport.initialize() as any);
   app.use(passport.session());
@@ -552,7 +556,8 @@ export function gooseRestRouter<T>(
     options.endpoints(router);
   }
 
-  router.post("/", authenticateMiddleware(), async (req, res) => {
+  // TODO Enable/disable anonymous auth middleware based on settings for route.
+  router.post("/", authenticateMiddleware(true), async (req, res) => {
     if (!checkPermissions("create", options.permissions.create, req.user)) {
       return res.status(405).send();
     }
@@ -567,7 +572,7 @@ export function gooseRestRouter<T>(
     return res.json({data: serialize(data, req.user)});
   });
 
-  router.get("/", authenticateMiddleware(), async (req, res) => {
+  router.get("/", authenticateMiddleware(true), async (req, res) => {
     if (!checkPermissions("list", options.permissions.list, req.user)) {
       return res.status(403).send();
     }
@@ -652,7 +657,7 @@ export function gooseRestRouter<T>(
     }
   });
 
-  router.get("/:id", authenticateMiddleware(), async (req, res) => {
+  router.get("/:id", authenticateMiddleware(true), async (req, res) => {
     if (!checkPermissions("read", options.permissions.read, req.user)) {
       return res.status(405).send();
     }
@@ -670,12 +675,12 @@ export function gooseRestRouter<T>(
     return res.json({data: serialize(data, req.user)});
   });
 
-  router.put("/:id", authenticateMiddleware(), async (req, res) => {
+  router.put("/:id", authenticateMiddleware(true), async (req, res) => {
     // Patch is what we want 90% of the time
     return res.status(500);
   });
 
-  router.patch("/:id", authenticateMiddleware(), async (req, res) => {
+  router.patch("/:id", authenticateMiddleware(true), async (req, res) => {
     if (!checkPermissions("update", options.permissions.update, req.user)) {
       console.debug(`Patch not allowed for user ${req.user?.id} on collection`);
       return res.status(405).send();
@@ -703,7 +708,7 @@ export function gooseRestRouter<T>(
     return res.json({data: serialize(doc, req.user)});
   });
 
-  router.delete("/:id", authenticateMiddleware(), async (req, res) => {
+  router.delete("/:id", authenticateMiddleware(true), async (req, res) => {
     if (!checkPermissions("delete", options.permissions.delete, req.user)) {
       return res.status(405).send();
     }

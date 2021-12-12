@@ -13,11 +13,7 @@ import {
 } from "./mongooseRestFramework";
 
 const assert = chai.assert;
-const JWTOptions = {
-  sessionSecret: "cats",
-  jwtSecret: "secret",
-  jwtIssuer: "example.com",
-};
+
 mongoose.connect("mongodb://localhost:27017/mrf");
 
 interface User {
@@ -85,6 +81,9 @@ describe("mongoose rest framework", () => {
     // jest.resetModules(); // Most important - it clears the cache
     process.env = {...OLD_ENV}; // Make a copy
     process.env.TOKEN_SECRET = "secret";
+    process.env.TOKEN_EXPIRES_IN = "30m";
+    process.env.TOKEN_ISSUER = "example.com";
+    process.env.SESSION_SECRET = "session";
   });
 
   afterEach(function() {
@@ -119,7 +118,7 @@ describe("mongoose rest framework", () => {
         }),
       ]);
       app = getBaseServer();
-      setupAuth(app, UserModel as any, JWTOptions);
+      setupAuth(app, UserModel as any);
       app.use(
         "/food",
         gooseRestRouter(FoodModel, {
@@ -334,7 +333,7 @@ describe("mongoose rest framework", () => {
         }),
       ]);
       app = getBaseServer();
-      setupAuth(app, UserModel as any, JWTOptions);
+      setupAuth(app, UserModel as any);
       app.use(
         "/food",
         gooseRestRouter(FoodModel, {
@@ -613,7 +612,7 @@ describe("mongoose rest framework", () => {
         }),
       ]);
       app = getBaseServer();
-      setupAuth(app, UserModel as any, JWTOptions);
+      setupAuth(app, UserModel as any);
       app.use(
         "/food",
         gooseRestRouter(FoodModel, {
@@ -686,6 +685,9 @@ describe("test token auth", function() {
     // jest.resetModules(); // Most important - it clears the cache
     process.env = {...OLD_ENV}; // Make a copy
     process.env.TOKEN_SECRET = "secret";
+    process.env.TOKEN_EXPIRES_IN = "30m";
+    process.env.TOKEN_ISSUER = "example.com";
+    process.env.SESSION_SECRET = "session";
   });
 
   afterEach(function() {
@@ -728,7 +730,7 @@ describe("test token auth", function() {
       }),
     ]);
     app = getBaseServer();
-    setupAuth(app, UserModel as any, JWTOptions);
+    setupAuth(app, UserModel as any);
     app.use(
       "/food",
       gooseRestRouter(FoodModel, {
@@ -785,6 +787,34 @@ describe("test token auth", function() {
       ownerId: userId,
     });
 
+    const meRes = await server
+      .get("/auth/me")
+      .set("authorization", `Bearer ${token}`)
+      .expect(200);
+    console.log("ME RES", meRes.body.data);
+    assert.isDefined(meRes.body.data._id);
+    assert.isDefined(meRes.body.data.id);
+    assert.isUndefined(meRes.body.data.hash);
+    assert.equal(meRes.body.data.email, "new@example.com");
+    assert.isDefined(meRes.body.data.token);
+    assert.isDefined(meRes.body.data.updated);
+    assert.isDefined(meRes.body.data.created);
+    assert.isFalse(meRes.body.data.admin);
+
+    const mePatchRes = await server
+      .patch("/auth/me")
+      .send({email: "new2@example.com"})
+      .set("authorization", `Bearer ${token}`)
+      .expect(200);
+    assert.isDefined(mePatchRes.body.data._id);
+    assert.isDefined(mePatchRes.body.data.id);
+    assert.isUndefined(mePatchRes.body.data.hash);
+    assert.equal(mePatchRes.body.data.email, "new2@example.com");
+    assert.isDefined(mePatchRes.body.data.token);
+    assert.isDefined(mePatchRes.body.data.updated);
+    assert.isDefined(mePatchRes.body.data.created);
+    assert.isFalse(mePatchRes.body.data.admin);
+
     // Use token to see 2 foods + the one we just created
     const getRes = await server
       .get("/food")
@@ -810,6 +840,34 @@ describe("test token auth", function() {
     const {userId, token} = res.body.data;
     assert.isDefined(userId);
     assert.isDefined(token);
+
+    const meRes = await server
+      .get("/auth/me")
+      .set("authorization", `Bearer ${token}`)
+      .expect(200);
+    console.log("ME RES", meRes.body.data);
+    assert.isDefined(meRes.body.data._id);
+    assert.isDefined(meRes.body.data.id);
+    assert.isUndefined(meRes.body.data.hash);
+    assert.equal(meRes.body.data.email, "admin@example.com");
+    assert.isDefined(meRes.body.data.token);
+    assert.isDefined(meRes.body.data.updated);
+    assert.isDefined(meRes.body.data.created);
+    assert.isTrue(meRes.body.data.admin);
+
+    const mePatchRes = await server
+      .patch("/auth/me")
+      .send({email: "admin2@example.com"})
+      .set("authorization", `Bearer ${token}`)
+      .expect(200);
+    assert.isDefined(mePatchRes.body.data._id);
+    assert.isDefined(mePatchRes.body.data.id);
+    assert.isUndefined(mePatchRes.body.data.hash);
+    assert.equal(mePatchRes.body.data.email, "admin2@example.com");
+    assert.isDefined(mePatchRes.body.data.token);
+    assert.isDefined(mePatchRes.body.data.updated);
+    assert.isDefined(mePatchRes.body.data.created);
+    assert.isTrue(mePatchRes.body.data.admin);
 
     // Use token to see admin foods
     const getRes = await server

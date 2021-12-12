@@ -3,14 +3,14 @@ import axios from "axios";
 import cron from "cron";
 import express, {Router} from "express";
 import cloneDeep from "lodash/cloneDeep";
-import {setupAuth, UserModel} from "./mongooseRestFramework";
+import {Env, setupAuth, UserModel} from "./mongooseRestFramework";
 import onFinished from "on-finished";
 import passport from "passport";
 
 const SLOW_READ_MAX = 200;
 const SLOW_WRITE_MAX = 500;
 
-const dsn = (process.env as any).SENTRY_DSN;
+const dsn = (process.env as Env).SENTRY_DSN;
 if (process.env.NODE_ENV === "production") {
   if (!dsn) {
     throw new Error("You must set SENTRY_DSN in the environment.");
@@ -125,10 +125,7 @@ function initializeRoutes(UserModel: UserModel, addRoutes: AddRoutes) {
 
   app.use(logRequests);
 
-  setupAuth(app as any, UserModel as any, {
-    sessionSecret: process.env.SESSION_SECRET || "pumpkin",
-    jwtIssuer: process.env.JWT_ISSUER || "example.com",
-  });
+  setupAuth(app as any, UserModel as any);
 
   // Adds all the user
   addRoutes(app);
@@ -196,7 +193,7 @@ export function cronjob(name: string, schedule: "hourly" | string, callback: () 
 
 // Convenience method to send data to a Slack webhook.
 export async function sendToSlack(text: string, channel = "bots") {
-  const slackWebhookUrl = (process.env as any).SLACK_WEBHOOK;
+  const slackWebhookUrl = (process.env as Env).SLACK_WEBHOOK;
   if (!slackWebhookUrl) {
     throw new Error("You must set SLACK_WEBHOOK in the environment.");
   }

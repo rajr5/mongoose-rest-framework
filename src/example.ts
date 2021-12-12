@@ -63,10 +63,7 @@ function getBaseServer() {
     }
   });
   app.use(express.json());
-  setupAuth(app, UserModel as any, {
-    sessionSecret: "cats",
-    jwtIssuer: "example.com",
-  });
+  setupAuth(app, UserModel as any);
   app.use(
     "/food",
     gooseRestRouter(FoodModel, {
