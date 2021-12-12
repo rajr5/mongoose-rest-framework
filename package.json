@@ -1,6 +1,6 @@
 {
   "name": "mongoose-rest-framework",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Styled after the Django & Django REST Framework, a batteries-include framework for building REST APIs with Node/Express/Mongoose.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
