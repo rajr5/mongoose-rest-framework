@@ -556,9 +556,10 @@ export function gooseRestRouter<T>(
     options.endpoints(router);
   }
 
-  // TODO Enable/disable anonymous auth middleware based on settings for route.
+  // TODO Toggle anonymous auth middleware based on settings for route.
   router.post("/", authenticateMiddleware(true), async (req, res) => {
     if (!checkPermissions("create", options.permissions.create, req.user)) {
+      console.warn(`Access to CREATE on ${model.name} denied for ${req.user?.id}`);
       return res.status(405).send();
     }
 
@@ -574,6 +575,7 @@ export function gooseRestRouter<T>(
 
   router.get("/", authenticateMiddleware(true), async (req, res) => {
     if (!checkPermissions("list", options.permissions.list, req.user)) {
+      console.warn(`Access to LIST on ${model.name} denied for ${req.user?.id}`);
       return res.status(403).send();
     }
 
@@ -659,6 +661,7 @@ export function gooseRestRouter<T>(
 
   router.get("/:id", authenticateMiddleware(true), async (req, res) => {
     if (!checkPermissions("read", options.permissions.read, req.user)) {
+      console.warn(`Access to READ on ${model.name} denied for ${req.user?.id}`);
       return res.status(405).send();
     }
 
@@ -669,6 +672,7 @@ export function gooseRestRouter<T>(
     }
 
     if (!checkPermissions("read", options.permissions.read, req.user, data)) {
+      console.warn(`Access to READ on ${model.name}:${req.params.id} denied for ${req.user?.id}`);
       return res.status(403).send();
     }
 
@@ -682,7 +686,7 @@ export function gooseRestRouter<T>(
 
   router.patch("/:id", authenticateMiddleware(true), async (req, res) => {
     if (!checkPermissions("update", options.permissions.update, req.user)) {
-      console.debug(`Patch not allowed for user ${req.user?.id} on collection`);
+      console.warn(`Access to PATCH on ${model.name} denied for ${req.user?.id}`);
       return res.status(405).send();
     }
 
@@ -693,7 +697,7 @@ export function gooseRestRouter<T>(
     }
 
     if (!checkPermissions("update", options.permissions.update, req.user, doc)) {
-      console.debug(`Patch not allowed for user ${req.user?.id} on doc ${doc._id}`);
+      console.warn(`Patch not allowed for user ${req.user?.id} on doc ${doc._id}`);
       return res.status(403).send();
     }
 
@@ -701,7 +705,7 @@ export function gooseRestRouter<T>(
     try {
       body = transform(req.body, "update", req.user);
     } catch (e) {
-      console.debug(`Patch failed for user ${req.user?.id}: ${(e as any).message}`);
+      console.warn(`Patch failed for user ${req.user?.id}: ${(e as any).message}`);
       return res.status(403).send({message: (e as any).message});
     }
     doc = await model.findOneAndUpdate({_id: req.params.id}, body, {new: true});
@@ -710,6 +714,7 @@ export function gooseRestRouter<T>(
 
   router.delete("/:id", authenticateMiddleware(true), async (req, res) => {
     if (!checkPermissions("delete", options.permissions.delete, req.user)) {
+      console.warn(`Access to DELETE on ${model.name} denied for ${req.user?.id}`);
       return res.status(405).send();
     }
 
@@ -720,6 +725,7 @@ export function gooseRestRouter<T>(
     }
 
     if (!checkPermissions("delete", options.permissions.delete, req.user, data)) {
+      console.warn(`Access to DELETE on ${model.name}:${req.params.id} denied for ${req.user?.id}`);
       return res.status(403).send();
     }
 

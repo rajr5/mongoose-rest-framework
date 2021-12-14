@@ -160,17 +160,16 @@ export function setupServer(UserModel: UserModel, addRoutes: AddRoutes) {
     throw e;
   }
 
-  return () => {
-    const port = process.env.PORT || "9000";
-    try {
-      app.listen(port, () => {
-        console.info(`Listening at on port ${port}`);
-      });
-    } catch (err) {
-      console.error(`Error trying to start HTTP server: ${err}\n${(err as any).stack}`);
-      process.exit(1);
-    }
-  };
+  const port = process.env.PORT || "9000";
+  try {
+    app.listen(port, () => {
+      console.info(`Listening at on port ${port}`);
+    });
+  } catch (err) {
+    console.error(`Error trying to start HTTP server: ${err}\n${(err as any).stack}`);
+    process.exit(1);
+  }
+  return app;
 }
 
 // Convenince method to execute cronjobs with an always-running server.
