@@ -55,6 +55,9 @@ export interface UserModel extends Model<User> {
   deserializeUser(): any;
   createAnonymousUser?: (id?: string) => Promise<User>;
   isValidPassword: (password: string) => boolean;
+  // Allows additional setup during signup. This will be passed the rest of req.body from the signup
+  // request.
+  postCreate?: (body: any) => Promise<void>;
 }
 
 type PermissionMethod<T> = (method: RESTMethod, user?: User, obj?: T) => boolean;
@@ -261,11 +264,17 @@ export function setupAuth(app: express.Application, userModel: UserModel) {
       {
         usernameField: "email",
         passwordField: "password",
+        passReqToCallback: true,
       },
-      async (email, password, done) => {
+      async (req, email, password, done) => {
         try {
           const user = await (userModel as any).register({email}, password);
-          await (user as any).setPassword(password);
+          if (user.postCreate) {
+            const body = req.body;
+            delete body.email;
+            delete body.password;
+            await user.postCreate(body);
+          }
           await user.save();
           if (!user.token) {
             throw new Error("Token not created");

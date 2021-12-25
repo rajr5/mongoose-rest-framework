@@ -20,6 +20,7 @@ interface User {
   admin: boolean;
   username: string;
   email: string;
+  age?: number;
 }
 
 interface Food {
@@ -33,11 +34,16 @@ interface Food {
 const userSchema = new Schema<User>({
   username: String,
   admin: {type: Boolean, default: false},
+  age: Number,
 });
 
 userSchema.plugin(passportLocalMongoose, {usernameField: "email"});
 userSchema.plugin(tokenPlugin);
 userSchema.plugin(createdDeletedPlugin);
+userSchema.methods.postCreate = async function(body: any) {
+  this.age = body.age;
+  return this.save();
+};
 
 const UserModel = model<User>("User", userSchema);
 
@@ -522,7 +528,6 @@ describe("mongoose rest framework", () => {
         .post("/auth/login")
         .send({email: "notAdmin@example.com", password: "password"})
         .expect(200);
-      console.log("RES", res.body);
       const foodRes = await agent.get("/food");
       const carrots = foodRes.body.data.find((food: Food) => food.name === "Carrots");
       const carrotRes = await agent
@@ -791,7 +796,6 @@ describe("test token auth", function() {
       .get("/auth/me")
       .set("authorization", `Bearer ${token}`)
       .expect(200);
-    console.log("ME RES", meRes.body.data);
     assert.isDefined(meRes.body.data._id);
     assert.isDefined(meRes.body.data.id);
     assert.isUndefined(meRes.body.data.hash);
@@ -832,6 +836,19 @@ describe("test token auth", function() {
     assert.equal(updateRes.body.data.name, "PeasAndCarrots");
   });
 
+  it("signup with extra data", async function() {
+    const res = await server
+      .post("/auth/signup")
+      .send({email: "new@example.com", password: "123", age: 25})
+      .expect(200);
+    const {userId, token} = res.body.data;
+    assert.isDefined(userId);
+    assert.isDefined(token);
+
+    const user = await UserModel.findOne({email: "new@example.com"});
+    assert.equal(user?.age, 25);
+  });
+
   it("completes token login e2e", async function() {
     const res = await server
       .post("/auth/login")
@@ -845,7 +862,6 @@ describe("test token auth", function() {
       .get("/auth/me")
       .set("authorization", `Bearer ${token}`)
       .expect(200);
-    console.log("ME RES", meRes.body.data);
     assert.isDefined(meRes.body.data._id);
     assert.isDefined(meRes.body.data.id);
     assert.isUndefined(meRes.body.data.hash);
