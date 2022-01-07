@@ -12,12 +12,14 @@ import {Env, setupAuth, UserModel} from "./mongooseRestFramework";
 const SLOW_READ_MAX = 200;
 const SLOW_WRITE_MAX = 500;
 
-const dsn = (process.env as Env).SENTRY_DSN;
-if (process.env.NODE_ENV === "production") {
-  if (!dsn) {
-    throw new Error("You must set SENTRY_DSN in the environment.");
+export function setupErrorLogging() {
+  const dsn = (process.env as Env).SENTRY_DSN;
+  if (process.env.NODE_ENV === "production") {
+    if (!dsn) {
+      throw new Error("You must set SENTRY_DSN in the environment.");
+    }
+    Sentry.init({dsn});
   }
-  Sentry.init({dsn});
 }
 
 export type AddRoutes = (router: Router) => void;
@@ -245,6 +247,7 @@ export interface SetupServerOptions {
   userModel: UserModel;
   addRoutes: AddRoutes;
   loggingOptions?: LoggingOptions;
+  skipListen?: boolean;
 }
 
 // Sets up the routes and returns a function to launch the API.
@@ -262,14 +265,16 @@ export function setupServer(options: SetupServerOptions) {
     throw e;
   }
 
-  const port = process.env.PORT || "9000";
-  try {
-    app.listen(port, () => {
-      logger.info(`Listening at on port ${port}`);
-    });
-  } catch (err) {
-    logger.error(`Error trying to start HTTP server: ${err}\n${(err as any).stack}`);
-    process.exit(1);
+  if (!options.skipListen) {
+    const port = process.env.PORT || "9000";
+    try {
+      app.listen(port, () => {
+        logger.info(`Listening at on port ${port}`);
+      });
+    } catch (err) {
+      logger.error(`Error trying to start HTTP server: ${err}\n${(err as any).stack}`);
+      process.exit(1);
+    }
   }
   return app;
 }
