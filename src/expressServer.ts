@@ -2,10 +2,12 @@ import * as Sentry from "@sentry/node";
 import axios from "axios";
 import cron from "cron";
 import express, {Router} from "express";
+import fs from "fs";
 import cloneDeep from "lodash/cloneDeep";
-import {Env, setupAuth, UserModel} from "./mongooseRestFramework";
 import onFinished from "on-finished";
 import passport from "passport";
+import winston, {level} from "winston";
+import {Env, setupAuth, UserModel} from "./mongooseRestFramework";
 
 const SLOW_READ_MAX = 200;
 const SLOW_WRITE_MAX = 500;
@@ -20,6 +22,95 @@ if (process.env.NODE_ENV === "production") {
 
 export type AddRoutes = (router: Router) => void;
 
+// Setup a default console logger.
+export const logger = winston.createLogger({
+  level: "debug",
+  transports: [
+    new winston.transports.Console({
+      debugStdout: true,
+      level: "debug",
+      format: winston.format.combine(winston.format.colorize(), winston.format.simple()),
+    }),
+  ],
+});
+
+interface LoggingOptions {
+  level?: "debug" | "info" | "warn" | "error";
+  transports?: winston.transport[];
+  disableFileLogging?: boolean;
+  disableConsoleLogging?: boolean;
+  logDirectory?: string;
+}
+
+function setupLogging(options?: LoggingOptions) {
+  logger.clear();
+  if (!options?.disableConsoleLogging) {
+    logger.add(
+      new winston.transports.Console({
+        debugStdout: !options?.level || options?.level === "debug",
+        level: options?.level ?? "debug",
+        format: winston.format.combine(winston.format.colorize(), winston.format.simple()),
+      })
+    );
+  }
+  if (!options?.disableFileLogging) {
+    const logDirectory = options?.logDirectory ?? "./log";
+    if (!fs.existsSync(logDirectory)) {
+      fs.mkdirSync(logDirectory);
+    }
+
+    const FILE_LOG_DEFAULTS = {
+      colorize: false,
+      compress: true,
+      dirname: logDirectory,
+      format: winston.format.simple(),
+      // 30 days of retention
+      maxFiles: 30,
+      // 50MB max file size
+      maxSize: 1024 * 1024 * 50,
+      // Only readable by server user
+      options: {mode: 0o600},
+    };
+
+    logger.add(
+      new winston.transports.Stream({
+        ...FILE_LOG_DEFAULTS,
+        level: "error",
+        handleExceptions: true,
+        // Use stream so we can open log in append mode rather than overwriting.
+        stream: fs.createWriteStream("error.log", {flags: "a"}),
+      })
+    );
+
+    logger.add(
+      new winston.transports.Stream({
+        ...FILE_LOG_DEFAULTS,
+        level: "info",
+        // Use stream so we can open log in append mode rather than overwriting.
+        stream: fs.createWriteStream("out.log", {flags: "a"}),
+      })
+    );
+    if (!options?.level || options?.level === "debug") {
+      logger.add(
+        new winston.transports.Stream({
+          ...FILE_LOG_DEFAULTS,
+          level: "debug",
+          // Use stream so we can open log in append mode rather than overwriting.
+          stream: fs.createWriteStream("debug.log", {flags: "a"}),
+        })
+      );
+    }
+  }
+
+  if (options?.transports) {
+    for (const transport of options.transports) {
+      logger.add(transport);
+    }
+  }
+
+  logger.debug("Logger set up complete");
+}
+
 const logRequestsFinished = function(req: any, res: any, startTime: [number, number]) {
   const diff = process.hrtime(startTime);
   const diffInMs = Math.round(diff[0] * 1000 + diff[1] * 0.000001);
@@ -29,18 +120,18 @@ const logRequestsFinished = function(req: any, res: any, startTime: [number, num
   } else if (req.route) {
     pathName = req.route.path;
   } else if (res.statusCode < 400) {
-    console.warn(`Request without route: ${req.originalUrl}`);
+    logger.warn(`Request without route: ${req.originalUrl}`);
   }
 
-  console.debug(`${req.method} -> ${req.originalUrl} ${res.statusCode} ${diffInMs + "ms"}`);
+  logger.debug(`${req.method} -> ${req.originalUrl} ${res.statusCode} ${diffInMs + "ms"}`);
   if (diffInMs > SLOW_READ_MAX && req.method === "GET") {
-    console.warn("Slow GET request", {
+    logger.warn("Slow GET request", {
       requestTime: diffInMs,
       pathName: pathName,
       url: req.originalUrl,
     });
   } else if (diffInMs > SLOW_WRITE_MAX) {
-    console.warn("Slow write request", {
+    logger.warn("Slow write request", {
       requestTime: diffInMs,
       pathName: pathName,
       url: req.originalUrl,
@@ -67,7 +158,7 @@ function logRequests(req: any, res: any, next: any) {
     body = ` Body: ${JSON.stringify(bodyCopy)}`;
   }
 
-  console.debug(`${req.method} <- ${req.url}${userString}${body}`);
+  logger.debug(`${req.method} <- ${req.url}${userString}${body}`);
   onFinished(res, () => logRequestsFinished(req, res, startTime));
   next();
 }
@@ -135,38 +226,49 @@ function initializeRoutes(UserModel: UserModel, addRoutes: AddRoutes) {
 
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   app.use(function onError(_err: any, _req: any, res: any, _next: any) {
-    console.error("Fallthrough error", _err);
+    logger.error("Fallthrough error", _err);
     res.statusCode = 500;
     res.end(res.sentry + "\n");
   });
 
-  console.debug("Listening on routes:");
+  logger.debug("Listening on routes:");
   app._router.stack.forEach((r: any) => {
     if (r.route && r.route.path) {
-      console.debug("[Route] " + r.route.path);
+      logger.debug("[Route] " + r.route.path);
     }
   });
 
   return app;
 }
 
+export interface SetupServerOptions {
+  userModel: UserModel;
+  addRoutes: AddRoutes;
+  loggingOptions?: LoggingOptions;
+}
+
 // Sets up the routes and returns a function to launch the API.
-export function setupServer(UserModel: UserModel, addRoutes: AddRoutes) {
+export function setupServer(options: SetupServerOptions) {
+  const UserModel = options.userModel;
+  const addRoutes = options.addRoutes;
+
+  setupLogging(options.loggingOptions);
+
   let app: express.Application;
   try {
     app = initializeRoutes(UserModel, addRoutes);
   } catch (e) {
-    console.error("Error initializing routes", e);
+    logger.error("Error initializing routes", e);
     throw e;
   }
 
   const port = process.env.PORT || "9000";
   try {
     app.listen(port, () => {
-      console.info(`Listening at on port ${port}`);
+      logger.info(`Listening at on port ${port}`);
     });
   } catch (err) {
-    console.error(`Error trying to start HTTP server: ${err}\n${(err as any).stack}`);
+    logger.error(`Error trying to start HTTP server: ${err}\n${(err as any).stack}`);
     process.exit(1);
   }
   return app;
@@ -183,7 +285,7 @@ export function cronjob(
   } else if (schedule === "minutely") {
     schedule = "* * * * *";
   }
-  console.info(`Adding cronjob ${name}, running at: ${schedule}`);
+  logger.info(`Adding cronjob ${name}, running at: ${schedule}`);
   try {
     new cron.CronJob({
       cronTime: schedule,
@@ -208,7 +310,7 @@ export async function sendToSlack(text: string, channel = "bots") {
       channel,
     });
   } catch (e) {
-    console.error("Error posting to slack", (e as any).text);
+    logger.error("Error posting to slack", (e as any).text);
   }
 }
 
@@ -224,7 +326,7 @@ export async function wrapScript(func: () => Promise<any>, options: WrapScriptOp
     .split("/")
     .slice(-1)[0]
     .replace(".ts", "");
-  console.log(`Running script ${name}`);
+  logger.info(`Running script ${name}`);
   sendToSlack(`Running script ${name}`, options.slackChannel);
 
   if (options.terminateTimeout !== 0) {
@@ -233,13 +335,13 @@ export async function wrapScript(func: () => Promise<any>, options: WrapScriptOp
     setTimeout(() => {
       const msg = `Script ${name} is taking a while, currently ${warnTime / 1000} seconds`;
       sendToSlack(msg);
-      console.warn(msg);
+      logger.warn(msg);
     }, warnTime);
 
     setTimeout(async () => {
       const msg = `Script ${name} took too long, exiting`;
       await sendToSlack(msg);
-      console.error(msg);
+      logger.error(msg);
       Sentry.captureException(new Error(`Script ${name} took too long, exiting`));
       await Sentry.flush();
       process.exit(2);
@@ -254,7 +356,7 @@ export async function wrapScript(func: () => Promise<any>, options: WrapScriptOp
     }
   } catch (e) {
     Sentry.captureException(e);
-    console.error(`Error running script ${name}: ${e}\n${(e as Error).stack}`);
+    logger.error(`Error running script ${name}: ${e}\n${(e as Error).stack}`);
     sendToSlack(`Error running script ${name}: ${e}\n${(e as Error).stack}`);
     await Sentry.flush();
     process.exit(1);

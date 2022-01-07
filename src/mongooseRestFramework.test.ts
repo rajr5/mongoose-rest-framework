@@ -11,6 +11,7 @@ import {
   setupAuth,
   tokenPlugin,
 } from "./mongooseRestFramework";
+import qs from "qs";
 
 const assert = chai.assert;
 
@@ -29,6 +30,9 @@ interface Food {
   created: Date;
   ownerId: mongoose.Types.ObjectId | User;
   hidden?: boolean;
+  source: {
+    name: string;
+  };
 }
 
 const userSchema = new Schema<User>({
@@ -52,6 +56,9 @@ const schema = new Schema<Food>({
   calories: Number,
   created: Date,
   ownerId: {type: "ObjectId", ref: "User"},
+  source: {
+    name: String,
+  },
   hidden: {type: Boolean, default: false},
 });
 
@@ -576,6 +583,7 @@ describe("mongoose rest framework", () => {
   let spinach: Food;
   let apple: Food;
   let carrots: Food;
+  let pizza: Food;
 
   describe("list options", function() {
     let notAdmin: any;
@@ -593,25 +601,38 @@ describe("mongoose rest framework", () => {
       await (admin as any).setPassword("securePassword");
       await admin.save();
 
-      [spinach, apple, carrots] = await Promise.all([
+      [spinach, apple, carrots, pizza] = await Promise.all([
         FoodModel.create({
           name: "Spinach",
           calories: 1,
-          created: new Date(),
+          created: new Date("2021-12-03T00:00:20.000Z"),
           ownerId: notAdmin._id,
           hidden: false,
+          source: {
+            name: "Brand",
+          },
         }),
         FoodModel.create({
           name: "Apple",
           calories: 100,
-          created: new Date().getTime() - 10,
+          created: new Date("2021-12-03T00:00:30.000Z"),
           ownerId: admin._id,
           hidden: true,
         }),
         FoodModel.create({
           name: "Carrots",
           calories: 100,
-          created: new Date().getTime() - 20,
+          created: new Date("2021-12-03T00:00:00.000Z"),
+          ownerId: admin._id,
+          hidden: false,
+          source: {
+            name: "USDA",
+          },
+        }),
+        FoodModel.create({
+          name: "Pizza",
+          calories: 400,
+          created: new Date("2021-12-03T00:00:10.000Z"),
           ownerId: admin._id,
           hidden: false,
         }),
@@ -629,10 +650,10 @@ describe("mongoose rest framework", () => {
             delete: [Permissions.IsAdmin],
           },
           defaultLimit: 2,
-          maxLimit: 2,
+          maxLimit: 3,
           sort: {created: "descending"},
           defaultQueryParams: {hidden: false},
-          queryFields: ["hidden", "calories"],
+          queryFields: ["hidden", "calories", "created", "source.name"],
           populatePaths: ["ownerId"],
         })
       );
@@ -647,22 +668,32 @@ describe("mongoose rest framework", () => {
     });
 
     it("list limit over", async function() {
+      // This shouldn't be seen, it's the end of the list.
+      await FoodModel.create({
+        name: "Pizza",
+        calories: 400,
+        created: new Date("2021-12-02T00:00:10.000Z"),
+        ownerId: admin._id,
+        hidden: false,
+      });
       const res = await server.get("/food?limit=4").expect(200);
-      assert.lengthOf(res.body.data, 2);
+      console.log(res.body.data);
+      assert.lengthOf(res.body.data, 3);
       assert.equal(res.body.data[0].id, (spinach as any).id);
-      assert.equal(res.body.data[1].id, (carrots as any).id);
+      assert.equal(res.body.data[1].id, (pizza as any).id);
+      assert.equal(res.body.data[2].id, (carrots as any).id);
     });
 
     it("list page", async function() {
       // Should skip to carrots since apples are hidden
       const res = await server.get("/food?limit=1&page=2").expect(200);
       assert.lengthOf(res.body.data, 1);
-      assert.equal(res.body.data[0].id, (carrots as any).id);
+      assert.equal(res.body.data[0].id, (pizza as any).id);
     });
 
     it("list page over", async function() {
       // Should skip to carrots since apples are hidden
-      const res = await server.get("/food?limit=1&page=4").expect(200);
+      const res = await server.get("/food?limit=1&page=5").expect(200);
       assert.lengthOf(res.body.data, 0);
     });
 
@@ -677,6 +708,72 @@ describe("mongoose rest framework", () => {
       // Should skip to carrots since apples are hidden
       const res = await server.get("/food?name=Apple").expect(400);
       assert.equal(res.body.message, "name is not allowed as a query param.");
+    });
+
+    it("list query by nested param", async function() {
+      // Should skip to carrots since apples are hidden
+      const res = await server.get("/food?source.name=USDA").expect(200);
+      assert.lengthOf(res.body.data, 1);
+      assert.equal(res.body.data[0].id, (carrots as any).id);
+    });
+
+    it("query by date", async function() {
+      const authRes = await server
+        .post("/auth/login")
+        .send({email: "admin@example.com", password: "securePassword"})
+        .expect(200);
+      const token = authRes.body.data.token;
+
+      // Inclusive
+      let res = await server
+        .get(
+          `/food?limit=3&${qs.stringify({
+            created: {
+              $lte: "2021-12-03T00:00:20.000Z",
+              $gte: "2021-12-03T00:00:00.000Z",
+            },
+          })}`
+        )
+        .set("authorization", `Bearer ${token}`)
+        .expect(200);
+      assert.sameDeepMembers(
+        ["2021-12-03T00:00:20.000Z", "2021-12-03T00:00:10.000Z", "2021-12-03T00:00:00.000Z"],
+        res.body.data.map((d: any) => d.created)
+      );
+
+      // Inclusive one side
+      res = await server
+        .get(
+          `/food?limit=3&${qs.stringify({
+            created: {
+              $lt: "2021-12-03T00:00:20.000Z",
+              $gte: "2021-12-03T00:00:00.000Z",
+            },
+          })}`
+        )
+        .set("authorization", `Bearer ${token}`)
+        .expect(200);
+      assert.sameDeepMembers(
+        ["2021-12-03T00:00:10.000Z", "2021-12-03T00:00:00.000Z"],
+        res.body.data.map((d: any) => d.created)
+      );
+
+      // Inclusive both sides
+      res = await server
+        .get(
+          `/food?limit=3&${qs.stringify({
+            created: {
+              $lt: "2021-12-03T00:00:20.000Z",
+              $gt: "2021-12-03T00:00:00.000Z",
+            },
+          })}`
+        )
+        .set("authorization", `Bearer ${token}`)
+        .expect(200);
+      assert.sameDeepMembers(
+        ["2021-12-03T00:00:10.000Z"],
+        res.body.data.map((d: any) => d.created)
+      );
     });
   });
 });

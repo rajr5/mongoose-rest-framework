@@ -7,6 +7,7 @@ import passport from "passport";
 import {Strategy as JwtStrategy} from "passport-jwt";
 import {Strategy as AnonymousStrategy} from "passport-anonymous";
 import {Strategy as LocalStrategy} from "passport-local";
+import {logger} from "./expressServer";
 
 export interface Env {
   NODE_ENV?: string;
@@ -224,7 +225,7 @@ export function createdDeletedPlugin(schema: Schema) {
   schema.add({created: {type: Date, index: true}});
 
   schema.pre("save", function(next) {
-    if (this.disablecreatedDeletedPlugin === true) {
+    if (this.disableCreatedDeletedPlugin === true) {
       next();
       return;
     }
@@ -299,20 +300,20 @@ export function setupAuth(app: express.Application, userModel: UserModel) {
           const user = await userModel.findOne({email});
 
           if (!user) {
-            console.debug("Could not find login user for", email);
+            logger.debug("Could not find login user for", email);
             return done(null, false, {message: "User not found"});
           }
 
           const validate = await (user as any).authenticate(password);
 
           if (!validate) {
-            console.debug("Invalid password for", email);
+            logger.debug("Invalid password for", email);
             return done(null, false, {message: "Wrong Password"});
           }
 
           return done(null, user, {message: "Logged in Successfully"});
         } catch (error) {
-          console.error("Login error", error);
+          logger.error("Login error", error);
           return done(error);
         }
       }
@@ -334,7 +335,7 @@ export function setupAuth(app: express.Application, userModel: UserModel) {
   passport.deserializeUser(userModel.deserializeUser());
 
   if ((process.env as Env).TOKEN_SECRET) {
-    console.debug("Setting up JWT Authentication");
+    logger.debug("Setting up JWT Authentication");
 
     const customExtractor = function(req: express.Request) {
       let token = null;
@@ -368,18 +369,18 @@ export function setupAuth(app: express.Application, userModel: UserModel) {
         try {
           user = await userModel.findById((payload as any).id);
         } catch (e) {
-          console.warn("[jwt] Error finding user from id", e);
+          logger.warn("[jwt] Error finding user from id", e);
           return done(e, false);
         }
         if (user) {
           return done(null, user);
         } else {
           if (userModel.createAnonymousUser) {
-            console.log("[jwt] Creating anonymous user");
+            logger.info("[jwt] Creating anonymous user");
             user = await userModel.createAnonymousUser();
             return done(null, user);
           } else {
-            console.log("[jwt] No user found from token");
+            logger.info("[jwt] No user found from token");
             return done(null, false);
           }
         }
@@ -447,6 +448,7 @@ export function setupAuth(app: express.Application, userModel: UserModel) {
   app.use(passport.initialize() as any);
   app.use(passport.session());
 
+  app.set("etag", false);
   app.use("/auth", router);
 }
 
@@ -568,7 +570,7 @@ export function gooseRestRouter<T>(
   // TODO Toggle anonymous auth middleware based on settings for route.
   router.post("/", authenticateMiddleware(true), async (req, res) => {
     if (!checkPermissions("create", options.permissions.create, req.user)) {
-      console.warn(`Access to CREATE on ${model.name} denied for ${req.user?.id}`);
+      logger.warn(`Access to CREATE on ${model.name} denied for ${req.user?.id}`);
       return res.status(405).send();
     }
 
@@ -584,7 +586,7 @@ export function gooseRestRouter<T>(
 
   router.get("/", authenticateMiddleware(true), async (req, res) => {
     if (!checkPermissions("list", options.permissions.list, req.user)) {
-      console.warn(`Access to LIST on ${model.name} denied for ${req.user?.id}`);
+      logger.warn(`Access to LIST on ${model.name} denied for ${req.user?.id}`);
       return res.status(403).send();
     }
 
@@ -607,7 +609,7 @@ export function gooseRestRouter<T>(
           query[queryParam] = req.query[queryParam];
         }
       } else {
-        console.debug("Unallowed query param", queryParam);
+        logger.debug("Unallowed query param", queryParam);
         return res.status(400).json({message: `${queryParam} is not allowed as a query param.`});
       }
     }
@@ -633,8 +635,8 @@ export function gooseRestRouter<T>(
     }
 
     let limit = options.defaultLimit ?? 100;
-    if (req.query.limit && Number(req.query.limit) < (options.maxLimit ?? 500)) {
-      limit = Number(req.query.limit);
+    if (Number(req.query.limit)) {
+      limit = Math.min(Number(req.query.limit), options.maxLimit ?? 500);
     }
 
     let builtQuery = model.find(query).limit(limit);
@@ -656,21 +658,21 @@ export function gooseRestRouter<T>(
     try {
       data = await builtQuery.exec();
     } catch (e) {
-      console.error("List error", e);
+      logger.error("List error", e);
       return res.status(500).send();
     }
     // TODO add pagination
     try {
       return res.json({data: serialize(data, req.user)});
     } catch (e) {
-      console.error("Serialization error", e);
+      logger.error("Serialization error", e);
       return res.status(500).send();
     }
   });
 
   router.get("/:id", authenticateMiddleware(true), async (req, res) => {
     if (!checkPermissions("read", options.permissions.read, req.user)) {
-      console.warn(`Access to READ on ${model.name} denied for ${req.user?.id}`);
+      logger.warn(`Access to READ on ${model.name} denied for ${req.user?.id}`);
       return res.status(405).send();
     }
 
@@ -681,7 +683,7 @@ export function gooseRestRouter<T>(
     }
 
     if (!checkPermissions("read", options.permissions.read, req.user, data)) {
-      console.warn(`Access to READ on ${model.name}:${req.params.id} denied for ${req.user?.id}`);
+      logger.warn(`Access to READ on ${model.name}:${req.params.id} denied for ${req.user?.id}`);
       return res.status(403).send();
     }
 
@@ -695,7 +697,7 @@ export function gooseRestRouter<T>(
 
   router.patch("/:id", authenticateMiddleware(true), async (req, res) => {
     if (!checkPermissions("update", options.permissions.update, req.user)) {
-      console.warn(`Access to PATCH on ${model.name} denied for ${req.user?.id}`);
+      logger.warn(`Access to PATCH on ${model.name} denied for ${req.user?.id}`);
       return res.status(405).send();
     }
 
@@ -706,7 +708,7 @@ export function gooseRestRouter<T>(
     }
 
     if (!checkPermissions("update", options.permissions.update, req.user, doc)) {
-      console.warn(`Patch not allowed for user ${req.user?.id} on doc ${doc._id}`);
+      logger.warn(`Patch not allowed for user ${req.user?.id} on doc ${doc._id}`);
       return res.status(403).send();
     }
 
@@ -714,7 +716,7 @@ export function gooseRestRouter<T>(
     try {
       body = transform(req.body, "update", req.user);
     } catch (e) {
-      console.warn(`Patch failed for user ${req.user?.id}: ${(e as any).message}`);
+      logger.warn(`Patch failed for user ${req.user?.id}: ${(e as any).message}`);
       return res.status(403).send({message: (e as any).message});
     }
     doc = await model.findOneAndUpdate({_id: req.params.id}, body, {new: true});
@@ -723,7 +725,7 @@ export function gooseRestRouter<T>(
 
   router.delete("/:id", authenticateMiddleware(true), async (req, res) => {
     if (!checkPermissions("delete", options.permissions.delete, req.user)) {
-      console.warn(`Access to DELETE on ${model.name} denied for ${req.user?.id}`);
+      logger.warn(`Access to DELETE on ${model.name} denied for ${req.user?.id}`);
       return res.status(405).send();
     }
 
@@ -734,7 +736,7 @@ export function gooseRestRouter<T>(
     }
 
     if (!checkPermissions("delete", options.permissions.delete, req.user, data)) {
-      console.warn(`Access to DELETE on ${model.name}:${req.params.id} denied for ${req.user?.id}`);
+      logger.warn(`Access to DELETE on ${model.name}:${req.params.id} denied for ${req.user?.id}`);
       return res.status(403).send();
     }
 
