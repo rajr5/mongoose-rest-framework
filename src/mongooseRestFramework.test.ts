@@ -1,7 +1,7 @@
 import chai from "chai";
 import express, {Express} from "express";
 import mongoose, {model, ObjectId, Schema} from "mongoose";
-import passportLocalMongoose from "passport-local-mongoose";
+import {passportLocalMongoose} from "./passport";
 import supertest from "supertest";
 import {
   AdminOwnerTransformer,
