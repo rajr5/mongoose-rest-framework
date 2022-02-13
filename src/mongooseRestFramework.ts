@@ -4,10 +4,10 @@ import session from "express-session";
 import jwt from "jsonwebtoken";
 import mongoose, {Document, Model, ObjectId, Schema} from "mongoose";
 import passport from "passport";
-import {Strategy as JwtStrategy} from "passport-jwt";
 import {Strategy as AnonymousStrategy} from "passport-anonymous";
+import {Strategy as JwtStrategy} from "passport-jwt";
 import {Strategy as LocalStrategy} from "passport-local";
-import {logger} from "./expressServer";
+import {logger} from "./logger";
 
 export interface Env {
   NODE_ENV?: string;
@@ -51,17 +51,25 @@ interface User {
 }
 
 export interface UserModel extends Model<User> {
-  createStrategy(): any;
-  serializeUser(): any;
-  deserializeUser(): any;
   createAnonymousUser?: (id?: string) => Promise<User>;
   isValidPassword: (password: string) => boolean;
-  // Allows additional setup during signup. This will be passed the rest of req.body from the signup
   // request.
   postCreate?: (body: any) => Promise<void>;
+
+  createStrategy(): any;
+
+  serializeUser(): any;
+
+  // Allows additional setup during signup. This will be passed the rest of req.body from the signup
+
+  deserializeUser(): any;
 }
 
-type PermissionMethod<T> = (method: RESTMethod, user?: User, obj?: T) => boolean;
+export type PermissionMethod<T> = (
+  method: RESTMethod,
+  user?: User,
+  obj?: T
+) => boolean | Promise<boolean>;
 
 interface RESTPermissions<T> {
   create: PermissionMethod<T>[];
@@ -74,7 +82,7 @@ interface RESTPermissions<T> {
 interface GooseRESTOptions<T> {
   permissions: RESTPermissions<T>;
   queryFields?: string[];
-  // return null to prevent the query from runnning
+  // return null to prevent the query from running
   queryFilter?: (user?: User) => Record<string, any> | null;
   transformer?: GooseTransformer<T>;
   sort?: string | {[key: string]: "ascending" | "descending"};
@@ -83,13 +91,19 @@ interface GooseRESTOptions<T> {
   defaultLimit?: number; // defaults to 100
   maxLimit?: number; // defaults to 500
   endpoints?: (router: any) => void;
+  preCreate?: (value: any, request: express.Request) => T | null;
+  preUpdate?: (value: any, request: express.Request) => T | null;
+  preDelete?: (value: any, request: express.Request) => T | null;
+  postCreate?: (value: any, request: express.Request) => void | Promise<void>;
+  postUpdate?: (value: any, request: express.Request) => void | Promise<void>;
+  postDelete?: (request: express.Request) => void | Promise<void>;
 }
 
 export const OwnerQueryFilter = (user?: User) => {
   if (user) {
     return {ownerId: user?.id};
   }
-  // Return a null so we know to return no results.
+  // Return a null, so we know to return no results.
   return null;
 };
 
@@ -98,10 +112,7 @@ export const Permissions = {
     if (user?.id && !user?.isAnonymous) {
       return true;
     }
-    if (method === "list" || method === "read") {
-      return true;
-    }
-    return false;
+    return method === "list" || method === "read";
   },
   IsOwnerOrReadOnly: (method: RESTMethod, user?: User, obj?: any) => {
     // When checking if we can possibly perform the action, return true.
@@ -115,10 +126,7 @@ export const Permissions = {
     if (user?.id && obj?.ownerId && String(obj?.ownerId) === String(user?.id)) {
       return true;
     }
-    if (method === "list" || method === "read") {
-      return true;
-    }
-    return false;
+    return method === "list" || method === "read";
   },
   IsAny: () => {
     return true;
@@ -148,15 +156,16 @@ export const Permissions = {
 };
 
 // Defaults closed
-export function checkPermissions<T>(
+export async function checkPermissions<T>(
   method: RESTMethod,
   permissions: PermissionMethod<T>[],
   user?: User,
   obj?: T
-): boolean {
+): Promise<boolean> {
   let anyTrue = false;
   for (const perm of permissions) {
-    if (perm(method, user, obj) === false) {
+    // May or may not be a promise.
+    if (!(await perm(method, user, obj))) {
       return false;
     } else {
       anyTrue = true;
@@ -186,7 +195,7 @@ export function tokenPlugin(schema: Schema, options: {expiresIn?: number} = {}) 
       }
       this.token = jwt.sign({id: this._id.toString()}, secretOrKey, tokenOptions);
     }
-    // On any save, update updated.
+    // On any save, update the updated field.
     this.updated = new Date();
     next();
   });
@@ -196,6 +205,7 @@ export interface BaseUser {
   admin: boolean;
   email: string;
 }
+
 export function baseUserPlugin(schema: Schema) {
   schema.add({admin: {type: Boolean, default: false}});
   schema.add({email: {type: String, index: true}});
@@ -233,7 +243,7 @@ export function createdDeletedPlugin(schema: Schema) {
     if (!this.created) {
       this.created = new Date();
     }
-    // All writes update updated.
+    // All writes change the updated time.
     this.updated = new Date();
     next();
   });
@@ -278,7 +288,7 @@ export function setupAuth(app: express.Application, userModel: UserModel) {
           }
           await user.save();
           if (!user.token) {
-            throw new Error("Token not created");
+            return done(new Error("Token not created"));
           }
           return done(null, user);
         } catch (error) {
@@ -429,6 +439,9 @@ export function setupAuth(app: express.Application, userModel: UserModel) {
     // }
     try {
       const data = await userModel.findOneAndUpdate({_id: req.user.id}, req.body, {new: true});
+      if (data === null) {
+        return res.status(404).send();
+      }
       const dataObject = data.toObject();
       (dataObject as any).id = data._id;
       return res.json({data: dataObject});
@@ -569,7 +582,7 @@ export function gooseRestRouter<T>(
 
   // TODO Toggle anonymous auth middleware based on settings for route.
   router.post("/", authenticateMiddleware(true), async (req, res) => {
-    if (!checkPermissions("create", options.permissions.create, req.user)) {
+    if (!(await checkPermissions("create", options.permissions.create, req.user))) {
       logger.warn(`Access to CREATE on ${model.name} denied for ${req.user?.id}`);
       return res.status(405).send();
     }
@@ -580,12 +593,35 @@ export function gooseRestRouter<T>(
     } catch (e) {
       return res.status(403).send({message: (e as any).message});
     }
-    const data = await model.create(body);
-    return res.json({data: serialize(data, req.user)});
+    if (options.preCreate) {
+      try {
+        body = options.preCreate(body, req);
+      } catch (e) {
+        return res.status(400).send({message: `Pre Create error: ${(e as any).message}`});
+      }
+      if (body === null) {
+        return res.status(403).send({message: "Pre Create returned null"});
+      }
+    }
+    let data;
+    try {
+      data = await model.create(body);
+    } catch (e) {
+      return res.status(400).send({message: (e as any).message});
+    }
+    if (options.postCreate) {
+      try {
+        await options.postCreate(data, req);
+      } catch (e) {
+        return res.status(400).send({message: `Post Create error: ${(e as any).message}`});
+      }
+    }
+    return res.status(201).json({data: serialize(data, req.user)});
   });
 
+  // TODO add rate limit
   router.get("/", authenticateMiddleware(true), async (req, res) => {
-    if (!checkPermissions("list", options.permissions.list, req.user)) {
+    if (!(await checkPermissions("list", options.permissions.list, req.user))) {
       logger.warn(`Access to LIST on ${model.name} denied for ${req.user?.id}`);
       return res.status(403).send();
     }
@@ -658,7 +694,7 @@ export function gooseRestRouter<T>(
     try {
       data = await builtQuery.exec();
     } catch (e) {
-      logger.error("List error", e);
+      logger.error(`List error: ${(e as any).stack}`);
       return res.status(500).send();
     }
     // TODO add pagination
@@ -671,7 +707,7 @@ export function gooseRestRouter<T>(
   });
 
   router.get("/:id", authenticateMiddleware(true), async (req, res) => {
-    if (!checkPermissions("read", options.permissions.read, req.user)) {
+    if (!(await checkPermissions("read", options.permissions.read, req.user))) {
       logger.warn(`Access to READ on ${model.name} denied for ${req.user?.id}`);
       return res.status(405).send();
     }
@@ -682,7 +718,7 @@ export function gooseRestRouter<T>(
       return res.status(404).send();
     }
 
-    if (!checkPermissions("read", options.permissions.read, req.user, data)) {
+    if (!(await checkPermissions("read", options.permissions.read, req.user, data))) {
       logger.warn(`Access to READ on ${model.name}:${req.params.id} denied for ${req.user?.id}`);
       return res.status(403).send();
     }
@@ -696,7 +732,7 @@ export function gooseRestRouter<T>(
   });
 
   router.patch("/:id", authenticateMiddleware(true), async (req, res) => {
-    if (!checkPermissions("update", options.permissions.update, req.user)) {
+    if (!(await checkPermissions("update", options.permissions.update, req.user))) {
       logger.warn(`Access to PATCH on ${model.name} denied for ${req.user?.id}`);
       return res.status(405).send();
     }
@@ -707,7 +743,7 @@ export function gooseRestRouter<T>(
       return res.status(404).send();
     }
 
-    if (!checkPermissions("update", options.permissions.update, req.user, doc)) {
+    if (!(await checkPermissions("update", options.permissions.update, req.user, doc))) {
       logger.warn(`Patch not allowed for user ${req.user?.id} on doc ${doc._id}`);
       return res.status(403).send();
     }
@@ -719,12 +755,36 @@ export function gooseRestRouter<T>(
       logger.warn(`Patch failed for user ${req.user?.id}: ${(e as any).message}`);
       return res.status(403).send({message: (e as any).message});
     }
-    doc = await model.findOneAndUpdate({_id: req.params.id}, body, {new: true});
+
+    if (options.preUpdate) {
+      try {
+        body = options.preUpdate(body, req);
+      } catch (e) {
+        return res.status(400).send({message: `Pre Update error: ${(e as any).message}`});
+      }
+      if (body === null) {
+        return res.status(403).send({message: "Pre Update returned null"});
+      }
+    }
+
+    try {
+      doc = await model.findOneAndUpdate({_id: req.params.id}, body as any, {new: true});
+    } catch (e) {
+      return res.status(400).send({message: (e as any).message});
+    }
+
+    if (options.postUpdate) {
+      try {
+        await options.postUpdate(doc, req);
+      } catch (e) {
+        return res.status(400).send({message: `Post Update error: ${(e as any).message}`});
+      }
+    }
     return res.json({data: serialize(doc, req.user)});
   });
 
   router.delete("/:id", authenticateMiddleware(true), async (req, res) => {
-    if (!checkPermissions("delete", options.permissions.delete, req.user)) {
+    if (!(await checkPermissions("delete", options.permissions.delete, req.user))) {
       logger.warn(`Access to DELETE on ${model.name} denied for ${req.user?.id}`);
       return res.status(405).send();
     }
@@ -735,12 +795,37 @@ export function gooseRestRouter<T>(
       return res.status(404).send();
     }
 
-    if (!checkPermissions("delete", options.permissions.delete, req.user, data)) {
+    if (!(await checkPermissions("delete", options.permissions.delete, req.user, data))) {
       logger.warn(`Access to DELETE on ${model.name}:${req.params.id} denied for ${req.user?.id}`);
       return res.status(403).send();
     }
 
-    return res.json({data: serialize(data, req.user)});
+    if (options.preDelete) {
+      try {
+        const body = options.preDelete(data, req);
+        if (body === null) {
+          return res.status(403).send({message: "Pre Delete returned null"});
+        }
+      } catch (e) {
+        return res.status(400).send({message: `Pre Delete error: ${(e as any).message}`});
+      }
+    }
+
+    try {
+      await data.remove();
+    } catch (e) {
+      return res.status(400).send({message: (e as any).message});
+    }
+
+    if (options.postDelete) {
+      try {
+        await options.postDelete(req);
+      } catch (e) {
+        return res.status(400).send({message: `Post Delete error: ${(e as any).message}`});
+      }
+    }
+
+    return res.status(204).send();
   });
 
   return router;

@@ -1,7 +1,7 @@
 import chai from "chai";
 import express from "express";
 import mongoose, {model, Schema} from "mongoose";
-import passportLocalMongoose from "passport-local-mongoose";
+import {passportLocalMongoose} from "./passport";
 import {tokenPlugin} from ".";
 import {
   baseUserPlugin,

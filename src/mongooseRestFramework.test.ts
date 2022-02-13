@@ -64,6 +64,17 @@ const schema = new Schema<Food>({
 
 const FoodModel = model<Food>("Food", schema);
 
+interface RequiredField {
+  name: string;
+  about?: string;
+}
+
+const requiredSchema = new Schema<RequiredField>({
+  name: {type: String, required: true},
+  about: String,
+});
+const RequiredModel = model<RequiredField>("Required", requiredSchema);
+
 function getBaseServer(): Express {
   const app = express();
 
@@ -85,6 +96,21 @@ afterAll(() => {
   mongoose.connection.close();
 });
 
+async function setupDb() {
+  await Promise.all([UserModel.deleteMany({}), FoodModel.deleteMany({})]);
+  const [notAdmin, admin] = await Promise.all([
+    UserModel.create({email: "notAdmin@example.com"}),
+    UserModel.create({email: "admin@example.com", admin: true}),
+  ]);
+  await (notAdmin as any).setPassword("password");
+  await notAdmin.save();
+
+  await (admin as any).setPassword("securePassword");
+  await admin.save();
+
+  return [admin, notAdmin];
+}
+
 describe("mongoose rest framework", () => {
   let server: supertest.SuperTest<supertest.Test>;
   let app: express.Application;
@@ -103,18 +129,188 @@ describe("mongoose rest framework", () => {
     process.env = OLD_ENV;
   });
 
+  describe("pre and post hooks", function() {
+    let app: any;
+    beforeEach(async function() {
+      await setupDb();
+      app = getBaseServer();
+      setupAuth(app, UserModel as any);
+    });
+
+    it("pre hooks change data", async function() {
+      let deleteCalled = false;
+      app.use(
+        "/food",
+        gooseRestRouter(FoodModel, {
+          permissions: {
+            list: [Permissions.IsAny],
+            create: [Permissions.IsAny],
+            read: [Permissions.IsAny],
+            update: [Permissions.IsAny],
+            delete: [Permissions.IsAny],
+          },
+          preCreate: (data: any) => {
+            data.calories = 14;
+            return data;
+          },
+          preUpdate: (data: any) => {
+            data.calories = 15;
+            return data;
+          },
+          preDelete: (data: any) => {
+            deleteCalled = true;
+            return data;
+          },
+        })
+      );
+      const server = supertest(app);
+
+      let res = await server
+        .post("/food")
+        .send({
+          name: "Broccoli",
+          calories: 15,
+        })
+        .expect(201);
+      const broccoli = await FoodModel.findById(res.body.data._id);
+      if (!broccoli) {
+        throw new Error("Broccoli was not created");
+      }
+      assert.equal(broccoli.name, "Broccoli");
+      // Overwritten by the pre create hook
+      assert.equal(broccoli.calories, 14);
+
+      res = await server
+        .patch(`/food/${broccoli._id}`)
+        .send({
+          name: "Broccoli2",
+        })
+        .expect(200);
+      assert.equal(res.body.data.name, "Broccoli2");
+      // Updated by the pre update hook
+      assert.equal(res.body.data.calories, 15);
+
+      await server.delete(`/food/${broccoli._id}`).expect(204);
+      assert.isTrue(deleteCalled);
+    });
+
+    it("pre hooks return null", async function() {
+      const notAdmin = await UserModel.findOne({email: "notAdmin@example.com"});
+      const spinach = await FoodModel.create({
+        name: "Spinach",
+        calories: 1,
+        created: new Date("2021-12-03T00:00:20.000Z"),
+        ownerId: (notAdmin as any)._id,
+        hidden: false,
+        source: {
+          name: "Brand",
+        },
+      });
+
+      app.use(
+        "/food",
+        gooseRestRouter(FoodModel, {
+          permissions: {
+            list: [Permissions.IsAny],
+            create: [Permissions.IsAny],
+            read: [Permissions.IsAny],
+            update: [Permissions.IsAny],
+            delete: [Permissions.IsAny],
+          },
+          preCreate: () => null,
+          preUpdate: () => null,
+          preDelete: () => null,
+        })
+      );
+      const server = supertest(app);
+
+      const res = await server
+        .post("/food")
+        .send({
+          name: "Broccoli",
+          calories: 15,
+        })
+        .expect(403);
+      const broccoli = await FoodModel.findById(res.body._id);
+      assert.isNull(broccoli);
+
+      await server
+        .patch(`/food/${spinach._id}`)
+        .send({
+          name: "Broccoli",
+        })
+        .expect(403);
+
+      await server.delete(`/food/${spinach._id}`).expect(403);
+    });
+
+    it("post hooks succeed", async function() {
+      let deleteCalled = false;
+      app.use(
+        "/food",
+        gooseRestRouter(FoodModel, {
+          permissions: {
+            list: [Permissions.IsAny],
+            create: [Permissions.IsAny],
+            read: [Permissions.IsAny],
+            update: [Permissions.IsAny],
+            delete: [Permissions.IsAny],
+          },
+          postCreate: async (data: any) => {
+            data.calories = 14;
+            await data.save();
+            return data;
+          },
+          postUpdate: async (data: any) => {
+            data.calories = 15;
+            await data.save();
+            return data;
+          },
+          postDelete: (data: any) => {
+            deleteCalled = true;
+            return data;
+          },
+        })
+      );
+      const server = supertest(app);
+
+      let res = await server
+        .post("/food")
+        .send({
+          name: "Broccoli",
+          calories: 15,
+        })
+        .expect(201);
+      let broccoli = await FoodModel.findById(res.body.data._id);
+      if (!broccoli) {
+        throw new Error("Broccoli was not created");
+      }
+      assert.equal(broccoli.name, "Broccoli");
+      // Overwritten by the pre create hook
+      assert.equal(broccoli.calories, 14);
+
+      res = await server
+        .patch(`/food/${broccoli._id}`)
+        .send({
+          name: "Broccoli2",
+        })
+        .expect(200);
+      broccoli = await FoodModel.findById(res.body.data._id);
+      if (!broccoli) {
+        throw new Error("Broccoli was not update");
+      }
+      assert.equal(broccoli.name, "Broccoli2");
+      // Updated by the post update hook
+      assert.equal(broccoli.calories, 15);
+
+      await server.delete(`/food/${broccoli._id}`).expect(204);
+      assert.isTrue(deleteCalled);
+    });
+  });
+
   describe("permissions", function() {
     beforeEach(async function() {
-      await Promise.all([UserModel.deleteMany({}), FoodModel.deleteMany({})]);
-      const [notAdmin, admin] = await Promise.all([
-        UserModel.create({email: "notAdmin@example.com"}),
-        UserModel.create({email: "admin@example.com", admin: true}),
-      ]);
-      await (notAdmin as any).setPassword("password");
-      await notAdmin.save();
-
-      await (admin as any).setPassword("securePassword");
-      await admin.save();
+      const [admin, notAdmin] = await setupDb();
 
       await Promise.all([
         FoodModel.create({
@@ -135,6 +331,18 @@ describe("mongoose rest framework", () => {
       app.use(
         "/food",
         gooseRestRouter(FoodModel, {
+          permissions: {
+            list: [Permissions.IsAny],
+            create: [Permissions.IsAuthenticated],
+            read: [Permissions.IsAny],
+            update: [Permissions.IsOwner],
+            delete: [Permissions.IsAdmin],
+          },
+        })
+      );
+      app.use(
+        "/required",
+        gooseRestRouter(RequiredModel, {
           permissions: {
             list: [Permissions.IsAny],
             create: [Permissions.IsAuthenticated],
@@ -217,7 +425,7 @@ describe("mongoose rest framework", () => {
             name: "Broccoli",
             calories: 15,
           });
-        assert.equal(res.status, 200);
+        assert.equal(res.status, 201);
       });
 
       it("patch own item", async function() {
@@ -255,6 +463,7 @@ describe("mongoose rest framework", () => {
     describe("admin food", function() {
       let agent: supertest.SuperAgentTest;
       let token: string;
+
       beforeEach(async function() {
         agent = supertest.agent(app);
         const res = await agent
@@ -284,7 +493,7 @@ describe("mongoose rest framework", () => {
             name: "Broccoli",
             calories: 15,
           });
-        assert.equal(res.status, 200);
+        assert.equal(res.status, 201);
       });
 
       it("patch", async function() {
@@ -303,7 +512,17 @@ describe("mongoose rest framework", () => {
         const res2 = await agent
           .delete(`/food/${res.body.data[0]._id}`)
           .set("authorization", `Bearer ${token}`);
-        assert.equal(res2.status, 200);
+        assert.equal(res2.status, 204);
+      });
+
+      it("handles validation errors", async function() {
+        const res = await agent
+          .post("/required")
+          .set("authorization", `Bearer ${token}`)
+          .send({
+            about: "Whoops forgot required",
+          });
+        assert.equal(res.status, 400);
       });
     });
   });
@@ -313,16 +532,7 @@ describe("mongoose rest framework", () => {
     let admin: any;
 
     beforeEach(async function() {
-      await Promise.all([UserModel.deleteMany({}), FoodModel.deleteMany({})]);
-      [notAdmin, admin] = await Promise.all([
-        UserModel.create({email: "notAdmin@example.com"}),
-        UserModel.create({email: "admin@example.com", admin: true}),
-      ]);
-      await (notAdmin as any).setPassword("password");
-      await notAdmin.save();
-
-      await (admin as any).setPassword("securePassword");
-      await admin.save();
+      [admin, notAdmin] = await setupDb();
 
       await Promise.all([
         FoodModel.create({
@@ -590,16 +800,7 @@ describe("mongoose rest framework", () => {
     let admin: any;
 
     beforeEach(async function() {
-      await Promise.all([UserModel.deleteMany({}), FoodModel.deleteMany({})]);
-      [notAdmin, admin] = await Promise.all([
-        UserModel.create({email: "notAdmin@example.com"}),
-        UserModel.create({email: "admin@example.com", admin: true}),
-      ]);
-      await (notAdmin as any).setPassword("password");
-      await notAdmin.save();
-
-      await (admin as any).setPassword("securePassword");
-      await admin.save();
+      [admin, notAdmin] = await setupDb();
 
       [spinach, apple, carrots, pizza] = await Promise.all([
         FoodModel.create({

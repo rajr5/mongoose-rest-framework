@@ -301,7 +301,7 @@ export const passportLocalMongoose = function(schema: Schema, opts: Partial<Opti
     return promise.then((result) => cb(null, result)).catch((err) => cb(err));
   };
 
-  schema.methods.changePassword = function(oldPassword, newPassword, cb) {
+  schema.methods.changePassword = function(oldPassword: string, newPassword: string, cb?: any) {
     const promise = Promise.resolve()
       .then(() => {
         if (!oldPassword || !newPassword) {
@@ -332,7 +332,7 @@ export const passportLocalMongoose = function(schema: Schema, opts: Partial<Opti
         return authenticate(this, password, options);
       }
 
-      return this.constructor
+      return (this.constructor as any)
         .findByUsername(this.get(options.usernameField), true)
         .then((user: any) => {
           if (user) {
