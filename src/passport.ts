@@ -20,12 +20,12 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 import crypto from "crypto";
-import {Strategy as LocalStrategy} from "passport-local";
 // @ts-ignore
 import generaterr from "generaterr";
+import {Schema} from "mongoose";
+import {Strategy as LocalStrategy} from "passport-local";
 // @ts-ignore
 import scmp from "scmp";
-import {Schema} from "mongoose";
 
 function pbkdf2(password: string, salt: string, options: Options, callback?: any) {
   crypto.pbkdf2(
@@ -65,8 +65,8 @@ function authenticate(user: any, password: string, options: Partial<Options>, cb
   }
 
   return new Promise((resolve, reject) => {
-    doAuthenticate(user, password, options, (err: any, user: any, error: any) =>
-      err ? reject(err) : resolve({user, error})
+    doAuthenticate(user, password, options, (err: any, u: any, error: any) =>
+      err ? reject(err) : resolve({user: u, error})
     );
   });
 }
@@ -82,7 +82,7 @@ function doAuthenticate(user: any, password: string, options: any, cb?: any) {
 
     if (Date.now() - user.get(options.lastLoginField) < calculatedInterval) {
       user.set(options.lastLoginField, Date.now());
-      user.save(function(saveErr: any) {
+      user.save(function (saveErr: any) {
         if (saveErr) {
           return cb(saveErr);
         }
@@ -112,7 +112,7 @@ function doAuthenticate(user: any, password: string, options: any, cb?: any) {
     );
   }
 
-  pbkdf2(password, user.get(options.saltField), options, function(err: any, hashBuffer: any) {
+  pbkdf2(password, user.get(options.saltField), options, function (err: any, hashBuffer: any) {
     if (err) {
       return cb(err);
     }
@@ -121,11 +121,11 @@ function doAuthenticate(user: any, password: string, options: any, cb?: any) {
       if (options.limitAttempts) {
         user.set(options.lastLoginField, Date.now());
         user.set(options.attemptsField, 0);
-        user.save(function(saveErr: any, user: any) {
+        user.save(function (saveErr: any, savedUser: any) {
           if (saveErr) {
             return cb(saveErr);
           }
-          return cb(null, user);
+          return cb(null, savedUser);
         });
       } else {
         return cb(null, user);
@@ -134,7 +134,7 @@ function doAuthenticate(user: any, password: string, options: any, cb?: any) {
       if (options.limitAttempts) {
         user.set(options.lastLoginField, Date.now());
         user.set(options.attemptsField, user.get(options.attemptsField) + 1);
-        user.save(function(saveErr: any) {
+        user.save(function (saveErr: any) {
           if (saveErr) {
             return cb(saveErr);
           }
@@ -171,7 +171,7 @@ export interface Options {
   digestAlgorithm: string;
 }
 
-export const passportLocalMongoose = function(schema: Schema, opts: Partial<Options> = {}) {
+export const passportLocalMongoose = function (schema: Schema, opts: Partial<Options> = {}) {
   const options: any = {...opts};
   options.saltlen = options.saltlen || 32;
   options.iterations = options.iterations || 25000;
@@ -223,7 +223,7 @@ export const passportLocalMongoose = function(schema: Schema, opts: Partial<Opti
 
   options.findByUsername =
     options.findByUsername ||
-    function(model: any, queryParameters: any) {
+    function (model: any, queryParameters: any) {
       return model.findOne(queryParameters);
     };
 
@@ -262,7 +262,7 @@ export const passportLocalMongoose = function(schema: Schema, opts: Partial<Opti
 
   schema.add(schemaFields);
 
-  schema.pre("save", function(next) {
+  schema.pre("save", function (next) {
     if (options.usernameLowerCase && this[options.usernameField]) {
       this[options.usernameField] = this[options.usernameField].toLowerCase();
     }
@@ -270,7 +270,7 @@ export const passportLocalMongoose = function(schema: Schema, opts: Partial<Opti
     next();
   });
 
-  schema.methods.setPassword = function(password: string, cb?: any): Promise<any> {
+  schema.methods.setPassword = function (password: string, cb?: any): Promise<any> {
     const promise = Promise.resolve()
       .then(() => {
         if (!password) {
@@ -301,7 +301,7 @@ export const passportLocalMongoose = function(schema: Schema, opts: Partial<Opti
     return promise.then((result) => cb(null, result)).catch((err) => cb(err));
   };
 
-  schema.methods.changePassword = function(oldPassword: string, newPassword: string, cb?: any) {
+  schema.methods.changePassword = function (oldPassword: string, newPassword: string, cb?: any) {
     const promise = Promise.resolve()
       .then(() => {
         if (!oldPassword || !newPassword) {
@@ -326,7 +326,7 @@ export const passportLocalMongoose = function(schema: Schema, opts: Partial<Opti
   };
 
   // @ts-ignore
-  schema.methods.authenticate = function(password: string, cb: any) {
+  schema.methods.authenticate = function (password: string, cb: any) {
     const promise = Promise.resolve().then(() => {
       if (this.get(options.saltField)) {
         return authenticate(this, password, options);
@@ -355,7 +355,7 @@ export const passportLocalMongoose = function(schema: Schema, opts: Partial<Opti
 
   if (options.limitAttempts) {
     // @ts-ignore
-    schema.methods.resetAttempts = function(cb: any) {
+    schema.methods.resetAttempts = function (cb: any) {
       const promise = Promise.resolve().then(() => {
         this.set(options.attemptsField, 0);
         return this.save();
@@ -370,7 +370,7 @@ export const passportLocalMongoose = function(schema: Schema, opts: Partial<Opti
   }
 
   // Passport Local Interface
-  schema.statics.authenticate = function() {
+  schema.statics.authenticate = function () {
     return (username: any, password: string, cb: any) => {
       const promise = Promise.resolve()
         .then(() => (this as any).findByUsername(username, true))
@@ -394,19 +394,19 @@ export const passportLocalMongoose = function(schema: Schema, opts: Partial<Opti
   };
 
   // Passport Interface
-  schema.statics.serializeUser = function() {
-    return function(user: any, cb: any) {
+  schema.statics.serializeUser = function () {
+    return function (user: any, cb: any) {
       cb(null, user.get(options.usernameField));
     };
   };
 
-  schema.statics.deserializeUser = function() {
+  schema.statics.deserializeUser = function () {
     return (username: any, cb: any) => {
       (this as any).findByUsername(username, cb);
     };
   };
 
-  schema.statics.register = function(user: any, password: string, cb: any): Promise<any> {
+  schema.statics.register = function (user: any, password: string, cb: any): Promise<any> {
     // Create an instance of this in case user isn't already an instance
     if (!(user instanceof this)) {
       user = new this(user);
@@ -434,20 +434,20 @@ export const passportLocalMongoose = function(schema: Schema, opts: Partial<Opti
     return promise.then((result) => cb(null, result)).catch((err) => cb(err));
   };
 
-  schema.statics.findByUsername = function(username: any | RegExp, opts: any, cb: any) {
+  schema.statics.findByUsername = function (username: any | RegExp, findOpts: any, cb: any) {
     if (typeof opts === "function") {
       cb = opts;
-      opts = {};
+      findOpts = {};
     }
 
-    if (typeof opts == "boolean") {
-      opts = {
-        selectHashSaltFields: opts,
+    if (typeof findOpts === "boolean") {
+      findOpts = {
+        selectHashSaltFields: findOpts,
       };
     }
 
-    opts = opts || {};
-    opts.selectHashSaltFields = !!opts.selectHashSaltFields;
+    findOpts = findOpts || {};
+    findOpts.selectHashSaltFields = !!findOpts.selectHashSaltFields;
 
     // if specified, convert the username to lowercase
     if (username !== undefined && options.usernameLowerCase) {
@@ -466,8 +466,8 @@ export const passportLocalMongoose = function(schema: Schema, opts: Partial<Opti
 
     const query = options.findByUsername(this, {$or: queryOrParameters});
 
-    if (opts.selectHashSaltFields) {
-      query.select("+" + options.hashField + " +" + options.saltField);
+    if (findOpts.selectHashSaltFields) {
+      query.select(`+${options.hashField} +${options.saltField}`);
     }
 
     if (options.selectFields) {
@@ -486,7 +486,7 @@ export const passportLocalMongoose = function(schema: Schema, opts: Partial<Opti
     return query;
   };
 
-  schema.statics.createStrategy = function() {
+  schema.statics.createStrategy = function () {
     return new LocalStrategy(options, (this as any).authenticate());
   };
 };

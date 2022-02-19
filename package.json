@@ -48,7 +48,6 @@
     "mongoose": "^6.1.9"
   },
   "devDependencies": {
-    "mongoose": "^6.1.9",
     "@types/bcrypt": "^5.0.0",
     "@types/chai": "^4.2.22",
     "@types/cron": "^1.7.3",
@@ -65,20 +64,21 @@
     "@types/passport-local": "^1.0.34",
     "@types/sinon": "^9.0.5",
     "@types/supertest": "^2.0.11",
-    "@typescript-eslint/eslint-plugin": "^4.33.0",
-    "@typescript-eslint/parser": "^4.33.0",
+    "@typescript-eslint/eslint-plugin": "^5.4.0",
+    "@typescript-eslint/parser": "^5.4.0",
     "chai": "^4.3.4",
-    "eslint": "^5.16.0",
-    "eslint-config-airbnb": "^16.1.0",
-    "eslint-config-developit": "^1.2.0",
+    "eslint": "^7.25.0",
     "eslint-config-prettier": "^4.1.0",
-    "eslint-loader": "^3.0.0",
-    "eslint-plugin-import": "^2.18.0",
-    "eslint-plugin-jsx-a11y": "^6.2.3",
+    "eslint-config-ts-fullstack": "^0.1.1",
+    "eslint-plugin-import": "^2.25.4",
     "eslint-plugin-lodash": "^7.1.0",
     "eslint-plugin-prettier": "^3.0.1",
+    "eslint-plugin-react": "^7.28.0",
+    "eslint-plugin-react-native": "^3.7.0",
+    "eslint-plugin-simple-import-sort": "^7.0.0",
     "jest": "^26.6.3",
-    "prettier": "^1.19.1",
+    "mongoose": "^6.1.9",
+    "prettier": "^2.5.1",
     "sinon": "^7.5.0",
     "supertest": "^6.1.6",
     "ts-jest": "^26.5.1",
@@ -94,42 +94,8 @@
     "useTabs": false
   },
   "eslintConfig": {
-    "parser": "@typescript-eslint/parser",
-    "parserOptions": {
-      "ecmaFeatures": {
-        "jsx": true
-      },
-      "ecmaVersion": 2018,
-      "sourceType": "module"
-    },
-    "settings": {
-      "react": {
-        "version": "16.13.1"
-      }
-    },
-    "plugins": [
-      "prettier",
-      "lodash"
-    ],
     "extends": [
-      "plugin:@typescript-eslint/eslint-recommended",
-      "prettier/@typescript-eslint",
-      "plugin:prettier/recommended"
-    ],
-    "rules": {
-      "prefer-const": "off",
-      "@typescript-eslint/explicit-function-return-type": "off",
-      "@typescript-eslint/explicit-member-accessibility": "off",
-      "@typescript-eslint/interface-name-prefix": "off",
-      "@typescript-eslint/no-empty-function": "off",
-      "@typescript-eslint/no-empty-interface": "off",
-      "@typescript-eslint/no-explicit-any": "off",
-      "@typescript-eslint/no-var-require": "off",
-      "lodash/import-scope": [
-        2,
-        "method"
-      ],
-      "prettier/prettier": "error"
-    }
+      "ts-fullstack"
+    ]
   }
 }

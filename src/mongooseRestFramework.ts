@@ -7,6 +7,7 @@ import passport from "passport";
 import {Strategy as AnonymousStrategy} from "passport-anonymous";
 import {Strategy as JwtStrategy} from "passport-jwt";
 import {Strategy as LocalStrategy} from "passport-local";
+
 import {logger} from "./logger";
 
 export interface Env {
@@ -176,7 +177,7 @@ export async function checkPermissions<T>(
 
 export function tokenPlugin(schema: Schema, options: {expiresIn?: number} = {}) {
   schema.add({token: {type: String, index: true}});
-  schema.pre("save", function(next) {
+  schema.pre("save", function (next) {
     // Add created when creating the object
     if (!this.token) {
       const tokenOptions: any = {
@@ -217,7 +218,7 @@ export interface IsDeleted {
 
 export function isDeletedPlugin(schema: Schema, defaultValue = false) {
   schema.add({deleted: {type: Boolean, default: defaultValue, index: true}});
-  schema.pre("find", function() {
+  schema.pre("find", function () {
     const query = this.getQuery();
     if (query && query.deleted === undefined) {
       this.where({deleted: {$ne: true}});
@@ -234,7 +235,7 @@ export function createdDeletedPlugin(schema: Schema) {
   schema.add({updated: {type: Date, index: true}});
   schema.add({created: {type: Date, index: true}});
 
-  schema.pre("save", function(next) {
+  schema.pre("save", function (next) {
     if (this.disableCreatedDeletedPlugin === true) {
       next();
       return;
@@ -248,7 +249,7 @@ export function createdDeletedPlugin(schema: Schema) {
     next();
   });
 
-  schema.pre("update", function(next) {
+  schema.pre("update", function (next) {
     this.update({}, {$set: {updated: new Date()}});
     next();
   });
@@ -347,7 +348,7 @@ export function setupAuth(app: express.Application, userModel: UserModel) {
   if ((process.env as Env).TOKEN_SECRET) {
     logger.debug("Setting up JWT Authentication");
 
-    const customExtractor = function(req: express.Request) {
+    const customExtractor = function (req: express.Request) {
       let token = null;
       if (req?.cookies?.jwt) {
         token = req.cookies.jwt;
@@ -368,7 +369,7 @@ export function setupAuth(app: express.Application, userModel: UserModel) {
     };
     passport.use(
       "jwt",
-      new JwtStrategy(jwtOpts, async function(
+      new JwtStrategy(jwtOpts, async function (
         payload: {id: string; iat: number; exp: number},
         done: any
       ) {
@@ -399,19 +400,21 @@ export function setupAuth(app: express.Application, userModel: UserModel) {
   }
 
   const router = express.Router();
-  router.post("/login", passport.authenticate("login", {session: false}), function(
-    req: any,
-    res: any
-  ) {
-    return res.json({data: {userId: req.user._id, token: req.user.token}});
-  });
+  router.post(
+    "/login",
+    passport.authenticate("login", {session: false}),
+    function (req: any, res: any) {
+      return res.json({data: {userId: req.user._id, token: req.user.token}});
+    }
+  );
 
-  router.post("/signup", passport.authenticate("signup", {session: false}), async function(
-    req: any,
-    res: any
-  ) {
-    return res.json({data: {userId: req.user._id, token: req.user.token}});
-  });
+  router.post(
+    "/signup",
+    passport.authenticate("signup", {session: false}),
+    async function (req: any, res: any) {
+      return res.json({data: {userId: req.user._id, token: req.user.token}});
+    }
+  );
 
   router.get("/me", authenticateMiddleware(), async (req, res) => {
     if (!req.user?.id) {
@@ -557,12 +560,12 @@ export function gooseRestRouter<T>(
   }
 
   function serialize(data: Document<T, {}, {}> | Document<T, {}, {}>[], user?: User) {
-    const serializeFn = (data: Document<T, {}, {}>, user?: User) => {
-      const dataObject = data.toObject() as T;
-      (dataObject as any).id = data._id;
+    const serializeFn = (serializeData: Document<T, {}, {}>, seralizeUser?: User) => {
+      const dataObject = serializeData.toObject() as T;
+      (dataObject as any).id = serializeData._id;
 
       if (options.transformer?.serialize) {
-        return options.transformer?.serialize(dataObject, user);
+        return options.transformer?.serialize(dataObject, seralizeUser);
       } else {
         return dataObject;
       }
@@ -651,11 +654,11 @@ export function gooseRestRouter<T>(
     }
 
     // Special operators. NOTE: these request Mongo Atlas.
-    if (req.query["$search"]) {
+    if (req.query.$search) {
       mongoose.connection.db.collection(model.collection.collectionName);
     }
 
-    if (req.query["$autocomplete"]) {
+    if (req.query.$autocomplete) {
       mongoose.connection.db.collection(model.collection.collectionName);
     }
 

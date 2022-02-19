@@ -18,17 +18,22 @@ export interface LoggingOptions {
   transports?: winston.transport[];
   disableFileLogging?: boolean;
   disableConsoleLogging?: boolean;
+  disableConsoleColors?: boolean;
   logDirectory?: string;
 }
 
 export function setupLogging(options?: LoggingOptions) {
   logger.clear();
   if (!options?.disableConsoleLogging) {
+    const formats: any[] = [winston.format.simple()];
+    if (!options?.disableConsoleColors) {
+      formats.push(winston.format.colorize());
+    }
     logger.add(
       new winston.transports.Console({
         debugStdout: !options?.level || options?.level === "debug",
         level: options?.level ?? "debug",
-        format: winston.format.combine(winston.format.colorize(), winston.format.simple()),
+        format: winston.format.combine(...formats),
       })
     );
   }

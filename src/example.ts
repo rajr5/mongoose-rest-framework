@@ -1,8 +1,8 @@
 import chai from "chai";
 import express from "express";
 import mongoose, {model, Schema} from "mongoose";
-import {passportLocalMongoose} from "./passport";
-import {tokenPlugin} from ".";
+
+import {logger, tokenPlugin} from ".";
 import {
   baseUserPlugin,
   createdDeletedPlugin,
@@ -10,6 +10,7 @@ import {
   Permissions,
   setupAuth,
 } from "./mongooseRestFramework";
+import {passportLocalMongoose} from "./passport";
 
 const assert = chai.assert;
 
@@ -52,10 +53,10 @@ const FoodModel = model<Food>("Food", schema);
 function getBaseServer() {
   const app = express();
 
-  app.all("/*", function(req, res, next) {
+  app.all("/*", function (req, res, next) {
     res.header("Access-Control-Allow-Origin", "*");
     res.header("Access-Control-Allow-Headers", "*");
-    //intercepts OPTIONS method
+    // intercepts OPTIONS method
     if (req.method === "OPTIONS") {
       res.send(200);
     } else {
@@ -77,6 +78,6 @@ function getBaseServer() {
     })
   );
   app.listen(5004);
-  console.log("Running on 5004");
+  logger.info("Running on 5004");
 }
 getBaseServer();

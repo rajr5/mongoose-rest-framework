@@ -2,8 +2,10 @@
  * Contains the APIs and model plugins to send and receive messages. Currently, supports Twilio and
  * Expo push notifications.
  */
+import axios from "axios";
 import Expo, {ExpoPushErrorTicket, ExpoPushSuccessTicket, ExpoPushTicket} from "expo-server-sdk";
 import mongoose, {Document, Schema, Types} from "mongoose";
+
 import {logger} from "../logger";
 import {
   ConversationDocument,
@@ -16,7 +18,6 @@ import {
   MessagePushStatus,
   MessageSchema,
 } from "./interfaces";
-import axios from "axios";
 
 // Selectively export from interfaces
 export {MessageSchema, MessageModel, MessageDocument} from "./interfaces";
@@ -358,7 +359,7 @@ export function conversationPlugin(conversationSchema: Schema) {
 
   conversationSchema.statics = {
     createConversationForUser(user: ConversationUser, extraData: any) {
-      console.log("Creating conversation for user", user._id);
+      logger.info("Creating conversation for user", user._id);
       return this.create({
         members: [{userId: user._id}],
         ...extraData,

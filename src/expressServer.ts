@@ -5,8 +5,9 @@ import express, {Router} from "express";
 import cloneDeep from "lodash/cloneDeep";
 import onFinished from "on-finished";
 import passport from "passport";
+
 import {logger, LoggingOptions, setupLogging} from "./logger";
-import {Env, setupAuth, UserModel} from "./mongooseRestFramework";
+import {Env, setupAuth, UserModel as UserMongooseModel} from "./mongooseRestFramework";
 
 const SLOW_READ_MAX = 200;
 const SLOW_WRITE_MAX = 500;
@@ -23,7 +24,7 @@ export function setupErrorLogging() {
 
 export type AddRoutes = (router: Router) => void;
 
-const logRequestsFinished = function(req: any, res: any, startTime: [number, number]) {
+const logRequestsFinished = function (req: any, res: any, startTime: [number, number]) {
   const diff = process.hrtime(startTime);
   const diffInMs = Math.round(diff[0] * 1000 + diff[1] * 0.000001);
   let pathName = "unknown";
@@ -35,17 +36,17 @@ const logRequestsFinished = function(req: any, res: any, startTime: [number, num
     logger.warn(`Request without route: ${req.originalUrl}`);
   }
 
-  logger.debug(`${req.method} -> ${req.originalUrl} ${res.statusCode} ${diffInMs + "ms"}`);
+  logger.debug(`${req.method} -> ${req.originalUrl} ${res.statusCode} ${`${diffInMs}ms`}`);
   if (diffInMs > SLOW_READ_MAX && req.method === "GET") {
     logger.warn("Slow GET request", {
       requestTime: diffInMs,
-      pathName: pathName,
+      pathName,
       url: req.originalUrl,
     });
   } else if (diffInMs > SLOW_WRITE_MAX) {
     logger.warn("Slow write request", {
       requestTime: diffInMs,
-      pathName: pathName,
+      pathName,
       url: req.originalUrl,
     });
   }
@@ -105,7 +106,7 @@ export function createRouterWithAuth(
   ]);
 }
 
-function initializeRoutes(UserModel: UserModel, addRoutes: AddRoutes) {
+function initializeRoutes(UserModel: UserMongooseModel, addRoutes: AddRoutes) {
   if (!process.env.SESSION_SECRET && process.env.NODE_ENV === "production") {
     throw new Error("You must provide a SESSION_SECRET in env.");
   }
@@ -114,7 +115,7 @@ function initializeRoutes(UserModel: UserModel, addRoutes: AddRoutes) {
 
   app.use(Sentry.Handlers.requestHandler());
 
-  app.all("/*", function(req, res, next) {
+  app.all("/*", function (req, res, next) {
     res.header("Access-Control-Allow-Origin", "*");
     res.header("Access-Control-Allow-Headers", "*");
     if (req.method === "OPTIONS") {
@@ -136,17 +137,16 @@ function initializeRoutes(UserModel: UserModel, addRoutes: AddRoutes) {
   // The error handler must be before any other error middleware and after all controllers
   app.use(Sentry.Handlers.errorHandler());
 
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   app.use(function onError(_err: any, _req: any, res: any, _next: any) {
     logger.error("Fallthrough error", _err);
     res.statusCode = 500;
-    res.end(res.sentry + "\n");
+    res.end(`${res.sentry}\n`);
   });
 
   logger.debug("Listening on routes:");
   app._router.stack.forEach((r: any) => {
     if (r.route && r.route.path) {
-      logger.debug("[Route] " + r.route.path);
+      logger.debug(`[Route] ${r.route.path}`);
     }
   });
 
@@ -154,7 +154,7 @@ function initializeRoutes(UserModel: UserModel, addRoutes: AddRoutes) {
 }
 
 export interface SetupServerOptions {
-  userModel: UserModel;
+  userModel: UserMongooseModel;
   addRoutes: AddRoutes;
   loggingOptions?: LoggingOptions;
   skipListen?: boolean;
@@ -237,10 +237,7 @@ export interface WrapScriptOptions {
 // Wrap up a script with some helpers, such as catching errors, reporting them to sentry, notifying
 // Slack of runs, etc. Also supports timeouts.
 export async function wrapScript(func: () => Promise<any>, options: WrapScriptOptions = {}) {
-  const name = require.main?.filename
-    .split("/")
-    .slice(-1)[0]
-    .replace(".ts", "");
+  const name = require.main?.filename.split("/").slice(-1)[0].replace(".ts", "");
   logger.info(`Running script ${name}`);
   sendToSlack(`Running script ${name}`, options.slackChannel);
 
