@@ -84,7 +84,7 @@ interface GooseRESTOptions<T> {
   permissions: RESTPermissions<T>;
   queryFields?: string[];
   // return null to prevent the query from running
-  queryFilter?: (user?: User) => Record<string, any> | null;
+  queryFilter?: (user?: User, query?: Record<string, any>) => Record<string, any> | null;
   transformer?: GooseTransformer<T>;
   sort?: string | {[key: string]: "ascending" | "descending"};
   defaultQueryParams?: {[key: string]: any};
@@ -267,6 +267,34 @@ export function authenticateMiddleware(anonymous = false) {
   return passport.authenticate(strategies, {session: false});
 }
 
+export async function signupUser(
+  userModel: UserModel,
+  email: string,
+  password: string,
+  body?: any
+) {
+  try {
+    const user = await (userModel as any).register({email}, password);
+    if (user.postCreate) {
+      delete body.email;
+      delete body.password;
+      try {
+        await user.postCreate(body);
+      } catch (e) {
+        logger.error("Error in user.postCreate", e);
+        throw e;
+      }
+    }
+    await user.save();
+    if (!user.token) {
+      throw new Error("Token not created");
+    }
+    return user;
+  } catch (error) {
+    throw error;
+  }
+}
+
 // TODO allow customization
 export function setupAuth(app: express.Application, userModel: UserModel) {
   passport.use(new AnonymousStrategy());
@@ -280,20 +308,9 @@ export function setupAuth(app: express.Application, userModel: UserModel) {
       },
       async (req, email, password, done) => {
         try {
-          const user = await (userModel as any).register({email}, password);
-          if (user.postCreate) {
-            const body = req.body;
-            delete body.email;
-            delete body.password;
-            await user.postCreate(body);
-          }
-          await user.save();
-          if (!user.token) {
-            return done(new Error("Token not created"));
-          }
-          return done(null, user);
-        } catch (error) {
-          return done(error);
+          done(undefined, await signupUser(userModel, email, password, req.body));
+        } catch (e) {
+          return done(e);
         }
       }
     )
@@ -663,7 +680,12 @@ export function gooseRestRouter<T>(
     }
 
     if (options.queryFilter) {
-      const queryFilter = options.queryFilter(req.user);
+      let queryFilter;
+      try {
+        queryFilter = await options.queryFilter(req.user, query);
+      } catch (e) {
+        return res.status(400).json({message: `Query filter error: ${e}`});
+      }
 
       // If the query filter returns null specifically, we know this is a query that shouldn't
       // return any results.
@@ -814,10 +836,20 @@ export function gooseRestRouter<T>(
       }
     }
 
-    try {
-      await data.remove();
-    } catch (e) {
-      return res.status(400).send({message: (e as any).message});
+    // Support .deleted from isDeleted plugin
+    if (
+      Object.keys(model.schema.paths).includes("deleted") &&
+      model.schema.paths.deleted.instance === "Boolean"
+    ) {
+      data.deleted = true;
+      await data.save();
+    } else {
+      // For models without the isDeleted plugin
+      try {
+        await data.remove();
+      } catch (e) {
+        return res.status(400).send({message: (e as any).message});
+      }
     }
 
     if (options.postDelete) {
